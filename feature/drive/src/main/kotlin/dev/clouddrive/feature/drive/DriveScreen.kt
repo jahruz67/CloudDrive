@@ -59,12 +59,16 @@ fun DriveShell(modifier: Modifier = Modifier) {
                 }
             }
         },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { padding ->
+        val contentModifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = padding.calculateBottomPadding())
         when (destination) {
-            MainDestination.FILES -> FilesScreen(Modifier.padding(padding))
-            MainDestination.OFFLINE -> OfflineScreen(Modifier.padding(padding))
-            MainDestination.TRANSFERS -> TransfersScreen(Modifier.padding(padding))
-            MainDestination.SETTINGS -> SettingsScreen(Modifier.padding(padding))
+            MainDestination.FILES -> FilesScreen(contentModifier)
+            MainDestination.OFFLINE -> OfflineScreen(contentModifier)
+            MainDestination.TRANSFERS -> TransfersScreen(contentModifier)
+            MainDestination.SETTINGS -> SettingsScreen(contentModifier)
         }
     }
 }
@@ -122,6 +126,9 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
                 }
                 SortMenu(state.sortField, viewModel::setSort)
             },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
         )
         OutlinedTextField(
             value = state.query,
@@ -289,7 +296,12 @@ private fun TextInputDialog(title: String, initial: String, hint: String, onDism
 private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hiltViewModel()) {
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { ScreenTitle(Icons.Default.CloudDownload, "Offline") })
+        TopAppBar(
+            title = { ScreenTitle(Icons.Default.CloudDownload, "Offline") },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        )
         if (nodes.isEmpty()) EmptyFiles("Files you make available offline appear here")
         else LazyColumn { items(nodes, key = RemoteNode::documentId) { node -> FileRow(node, false, {}, {}) { if (it == NodeAction.OFFLINE) viewModel.remove(node) } } }
     }
@@ -299,7 +311,12 @@ private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hilt
 private fun TransfersScreen(modifier: Modifier, viewModel: TransfersViewModel = hiltViewModel()) {
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { ScreenTitle(Icons.Default.CloudSync, "Transfers") })
+        TopAppBar(
+            title = { ScreenTitle(Icons.Default.CloudSync, "Transfers") },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        )
         if (transfers.isEmpty()) EmptyFiles("No transfers yet")
         else LazyColumn { items(transfers, key = Transfer::id) { transfer ->
             ListItem(
@@ -322,7 +339,12 @@ private fun SettingsScreen(modifier: Modifier, viewModel: SettingsViewModel = hi
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val cacheBytes by viewModel.cacheBytes.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { ScreenTitle(Icons.Default.CloudCircle, "Settings") })
+        TopAppBar(
+            title = { ScreenTitle(Icons.Default.CloudCircle, "Settings") },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        )
         LazyColumn {
             item { SettingsHeader("Appearance") }
             item { ChoiceSetting("Theme", settings.themeMode.name.lowercase().replaceFirstChar(Char::uppercase), ThemeMode.entries, { it.name.lowercase().replaceFirstChar(Char::uppercase) }, Icons.Default.Palette, viewModel::setTheme) }

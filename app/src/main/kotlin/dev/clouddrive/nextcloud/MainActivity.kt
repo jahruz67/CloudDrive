@@ -4,10 +4,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
@@ -40,7 +42,19 @@ class MainActivity : ComponentActivity() {
             val dark = when (state.themeMode) {
                 ThemeMode.DARK -> true
                 ThemeMode.LIGHT -> false
-                ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+            DisposableEffect(dark) {
+                val statusBarStyle = if (dark) {
+                    SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                }
+                enableEdgeToEdge(
+                    statusBarStyle = statusBarStyle,
+                    navigationBarStyle = statusBarStyle,
+                )
+                onDispose {}
             }
             CloudDriveTheme(dark) {
                 LaunchedEffect(viewModel) {
@@ -50,8 +64,13 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                if (state.account == null) LoginScreen(state.loggingIn, state.error, viewModel::login)
-                else DriveShell(Modifier.safeDrawingPadding())
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    if (state.account == null) LoginScreen(state.loggingIn, state.error, viewModel::login)
+                    else DriveShell(Modifier.fillMaxSize())
+                }
             }
         }
     }
@@ -60,9 +79,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LoginScreen(loggingIn: Boolean, error: String?, onConnect: (String) -> Unit) {
     var server by rememberSaveable { mutableStateOf("") }
-    Surface(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(
-            Modifier.fillMaxSize().padding(32.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
