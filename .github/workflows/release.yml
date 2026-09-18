@@ -32,8 +32,29 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Build release APK
-        run: ./gradlew --no-daemon clean :app:assembleRelease
+      - name: Build installable APK
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+          ANDROID_SIGNING_ALIAS: ${{ secrets.ANDROID_SIGNING_ALIAS }}
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$ANDROID_SIGNING_KEYSTORE" && \
+                -n "$ANDROID_SIGNING_ALIAS" && \
+                -n "$ANDROID_SIGNING_STORE_PASSWORD" && \
+                -n "$ANDROID_SIGNING_KEY_PASSWORD" ]]; then
+            ./gradlew --no-daemon clean :app:assembleRelease
+            echo "APK_VARIANT=release" >> "$GITHUB_ENV"
+            echo "SIGN_RELEASE_APK=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Release-signing secrets are incomplete; publishing an installable debug-signed APK. Configure all four ANDROID_SIGNING_* secrets for stable upgrade-compatible releases."
+            ./gradlew --no-daemon clean :app:assembleDebug
+            echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
+            echo "SIGN_RELEASE_APK=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Resolve release tag
         shell: bash
@@ -51,22 +72,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          : "${ANDROID_SIGNING_KEYSTORE:?Add the ANDROID_SIGNING_KEYSTORE repository secret}"
-          : "${ANDROID_SIGNING_ALIAS:?Add the ANDROID_SIGNING_ALIAS repository secret}"
-          : "${ANDROID_SIGNING_STORE_PASSWORD:?Add the ANDROID_SIGNING_STORE_PASSWORD repository secret}"
-          : "${ANDROID_SIGNING_KEY_PASSWORD:?Add the ANDROID_SIGNING_KEY_PASSWORD repository secret}"
-
           mkdir -p release
-          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+          apk_path="$(find "app/build/outputs/apk/$APK_VARIANT" -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
           if [[ -z "$apk_path" ]]; then
-            echo "No release APK was generated. Contents of app/build/outputs:" >&2
+            echo "No $APK_VARIANT APK was generated. Contents of app/build/outputs:" >&2
             find app/build/outputs -maxdepth 4 -type f -print >&2 || true
             exit 1
           fi
-
-          keystore_path="$RUNNER_TEMP/cloudapp-release.jks"
-          trap 'rm -f "$keystore_path"' EXIT
-          printf '%s' "$ANDROID_SIGNING_KEYSTORE" | base64 --decode > "$keystore_path"
 
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
           if [[ -z "$apksigner_path" ]]; then
@@ -75,13 +87,20 @@ jobs:
           fi
 
           release_apk="release/cloudapp-${RELEASE_TAG}.apk"
-          "$apksigner_path" sign \
-            --ks "$keystore_path" \
-            --ks-key-alias "$ANDROID_SIGNING_ALIAS" \
-            --ks-pass env:ANDROID_SIGNING_STORE_PASSWORD \
-            --key-pass env:ANDROID_SIGNING_KEY_PASSWORD \
-            --out "$release_apk" \
-            "$apk_path"
+          if [[ "$SIGN_RELEASE_APK" == "true" ]]; then
+            keystore_path="$RUNNER_TEMP/cloudapp-release.jks"
+            trap 'rm -f "$keystore_path"' EXIT
+            printf '%s' "$ANDROID_SIGNING_KEYSTORE" | base64 --decode > "$keystore_path"
+            "$apksigner_path" sign \
+              --ks "$keystore_path" \
+              --ks-key-alias "$ANDROID_SIGNING_ALIAS" \
+              --ks-pass env:ANDROID_SIGNING_STORE_PASSWORD \
+              --key-pass env:ANDROID_SIGNING_KEY_PASSWORD \
+              --out "$release_apk" \
+              "$apk_path"
+          else
+            cp "$apk_path" "$release_apk"
+          fi
           "$apksigner_path" verify --verbose --print-certs "$release_apk"
 
       - name: Create GitHub Release and upload APK

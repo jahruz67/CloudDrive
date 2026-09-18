@@ -19,8 +19,8 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Release signing
 
-GitHub releases are signed before their APK is uploaded. Configure these Actions
-repository secrets before running the release workflow:
+GitHub releases use a stable release key when all of these Actions repository
+secrets are configured:
 
 - `ANDROID_SIGNING_KEYSTORE`: the release keystore encoded as a single-line Base64 value
 - `ANDROID_SIGNING_ALIAS`: the key alias in that keystore
@@ -29,6 +29,10 @@ repository secrets before running the release workflow:
 
 Keep the keystore and passwords backed up. Every release must use the same key so
 Android can install future versions as updates.
+
+If these secrets are absent or incomplete, the workflow publishes an installable
+debug-signed APK instead. That fallback is suitable for testing and fresh installs,
+but it does not provide a stable signing identity for upgrades between releases.
 
 ## Test
 
