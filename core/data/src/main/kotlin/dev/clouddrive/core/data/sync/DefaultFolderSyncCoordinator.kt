@@ -95,15 +95,15 @@ class DefaultFolderSyncCoordinator @Inject constructor(
         scope.launch {
             val documentId = if (normalized == "/") ROOT_DOCUMENT_ID
             else nodeDao.getByPath("primary", normalized)?.documentId ?: return@launch
-            context.contentResolver.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, documentId), null, 0)
-            context.contentResolver.notifyChange(DocumentsContract.buildDocumentUri(authority, documentId), null, 0)
+            context.contentResolver.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, documentId), null, false)
+            context.contentResolver.notifyChange(DocumentsContract.buildDocumentUri(authority, documentId), null, false)
         }
     }
 
     override fun notifyRoots() {
-        context.contentResolver.notifyChange(DocumentsContract.buildRootsUri(authority), null, 0)
-        context.contentResolver.notifyChange(DocumentsContract.buildRootUri(authority, "primary"), null, 0)
-        context.contentResolver.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, ROOT_DOCUMENT_ID), null, 0)
-        context.contentResolver.notifyChange(DocumentsContract.buildDocumentUri(authority, ROOT_DOCUMENT_ID), null, 0)
+        context.contentResolver.notifyChange(DocumentsContract.buildRootsUri(authority), null, false)
+        context.contentResolver.notifyChange(DocumentsContract.buildRootUri(authority, "primary"), null, false)
+        context.contentResolver.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, ROOT_DOCUMENT_ID), null, false)
+        context.contentResolver.notifyChange(DocumentsContract.buildDocumentUri(authority, ROOT_DOCUMENT_ID), null, false)
     }
 }

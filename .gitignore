@@ -11,3 +11,4 @@ keystore.properties
 *.keystore
 .toolchain/
 .android-home/
+.kotlin/
