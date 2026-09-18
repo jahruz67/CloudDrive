@@ -45,7 +45,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/release/app-release.apk "release/cloudapp-${RELEASE_TAG}.apk"
+          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+          if [[ -z "$apk_path" ]]; then
+            echo "No release APK was generated. Contents of app/build/outputs:" >&2
+            find app/build/outputs -maxdepth 4 -type f -print >&2 || true
+            exit 1
+          fi
+          cp "$apk_path" "release/cloudapp-${RELEASE_TAG}.apk"
 
       - name: Create GitHub Release and upload APK
         uses: softprops/action-gh-release@v2
