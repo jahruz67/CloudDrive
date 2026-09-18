@@ -30,7 +30,7 @@ class CacheMaintenanceWorker @AssistedInject constructor(
         transferDao.byStates(listOf(TransferState.CANCELED, TransferState.FAILED)).filter {
             it.state == TransferState.CANCELED || it.updatedAtEpochMillis < cutoff
         }.forEach { transfer ->
-            transfer.uploadId?.let { runCatching { gateway.abortChunks(it) } }
+            transfer.uploadId?.let { try { gateway.abortChunks(it) } catch (_: Exception) { } }
             transfer.localPath?.let(::File)?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
         }
         File(applicationContext.filesDir, "transfer-staging").listFiles()?.filter { it.lastModified() < cutoff }?.forEach(File::delete)

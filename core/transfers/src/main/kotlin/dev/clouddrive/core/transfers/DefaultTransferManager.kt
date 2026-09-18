@@ -70,7 +70,7 @@ class DefaultTransferManager @Inject constructor(
     override suspend fun cancel(id: String) {
         val transfer = transferDao.get(id)
         setState(id, TransferState.CANCELED)
-        transfer?.uploadId?.let { runCatching { gateway.abortChunks(it) } }
+        transfer?.uploadId?.let { try { gateway.abortChunks(it) } catch (_: Exception) { } }
         transfer?.localPath?.let { File(it) }?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
     }
     override suspend fun resume(id: String) { setState(id, TransferState.QUEUED); wake() }
