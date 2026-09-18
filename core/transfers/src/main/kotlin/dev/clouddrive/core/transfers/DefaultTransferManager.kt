@@ -14,6 +14,7 @@ import dev.clouddrive.core.data.network.RemoteGateway
 import dev.clouddrive.core.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.io.File
 import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
@@ -21,7 +22,7 @@ import javax.inject.Singleton
 
 @Singleton
 class DefaultTransferManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val transferDao: TransferDao,
     private val gateway: RemoteGateway,
 ) : TransferManager {
@@ -52,7 +53,7 @@ class DefaultTransferManager @Inject constructor(
         return id
     }
 
-    override suspend fun enqueueLocalUpload(file: java.io.File, remotePath: String, displayName: String, baseEtag: String?): String {
+    override suspend fun enqueueLocalUpload(file: File, remotePath: String, displayName: String, baseEtag: String?): String {
         val id = UUID.randomUUID().toString()
         transferDao.upsert(
             Transfer(
@@ -70,7 +71,7 @@ class DefaultTransferManager @Inject constructor(
         val transfer = transferDao.get(id)
         setState(id, TransferState.CANCELED)
         transfer?.uploadId?.let { runCatching { gateway.abortChunks(it) } }
-        transfer?.localPath?.let(::java.io.File)?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
+        transfer?.localPath?.let { File(it) }?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
     }
     override suspend fun resume(id: String) { setState(id, TransferState.QUEUED); wake() }
     override suspend fun retry(id: String) { setState(id, TransferState.QUEUED); wake() }

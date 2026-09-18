@@ -32,7 +32,7 @@ class NextcloudRemoteGateway @Inject constructor(
         val request = Request.Builder().url("$normalized/index.php/login/v2").post(EMPTY_BODY).build()
         client.newCall(request).execute().use { response ->
             requireSuccess(response)
-            val json = response.body?.string().orEmpty()
+            val json = response.body.string()
             LoginStart(
                 loginUrl = jsonValue(json, "login"),
                 pollEndpoint = jsonValue(json.substringAfter("\"poll\""), "endpoint"),
@@ -46,7 +46,7 @@ class NextcloudRemoteGateway @Inject constructor(
         client.newCall(Request.Builder().url(endpoint).post(body).build()).execute().use { response ->
             if (response.code == 404) return@withContext LoginPollResult.Pending
             requireSuccess(response)
-            val json = response.body?.string().orEmpty()
+            val json = response.body.string()
             LoginPollResult.Complete(
                 LoginCredential(
                     ServerUrlNormalizer.normalize(jsonValue(json, "server")),
@@ -108,7 +108,7 @@ class NextcloudRemoteGateway @Inject constructor(
             val append = offset > 0 && response.code == 206
             val start = if (append) offset else 0L
             if (!append && destination.exists()) destination.delete()
-            val body = response.body ?: throw CloudError.Network("The server returned an empty download")
+            val body = response.body
             destination.parentFile?.mkdirs()
             destination.sink(append = append).buffer().use { sink ->
                 val source = body.source()
@@ -139,7 +139,7 @@ class NextcloudRemoteGateway @Inject constructor(
         client.newCall(Request.Builder().url(url).authenticated(credential).build()).execute().use { response ->
             requireSuccess(response)
             destination.parentFile?.mkdirs()
-            val body = response.body ?: throw CloudError.Network("The server returned an empty preview")
+            val body = response.body
             destination.sink().buffer().use { body.source().readAll(it) }
         }
         destination
@@ -188,7 +188,7 @@ class NextcloudRemoteGateway @Inject constructor(
         val request = davRequest("/").method("PROPFIND", QUOTA_BODY).header("Depth", "0").build()
         client.newCall(request).execute().use { response ->
             requireSuccess(response)
-            val stream = response.body?.byteStream() ?: throw CloudError.Network("The server returned no quota information")
+            val stream = response.body.byteStream()
             DavXmlParser.parseQuota(stream)
         }
     }
@@ -212,7 +212,7 @@ class NextcloudRemoteGateway @Inject constructor(
     private fun executeXml(request: Request): List<RemoteNode> {
         client.newCall(request).execute().use { response ->
             requireSuccess(response)
-            val stream = response.body?.byteStream() ?: return emptyList()
+            val stream = response.body.byteStream()
             return DavXmlParser.parse(stream, requireCredential().loginName)
         }
     }
@@ -239,7 +239,7 @@ class NextcloudRemoteGateway @Inject constructor(
 
     private fun requireSuccess(response: Response) {
         if (response.isSuccessful || response.code == 207) return
-        val message = response.body?.string()?.take(500).orEmpty()
+        val message = response.body.string().take(500)
         throw when (response.code) {
             401 -> CloudError.Authentication("Your Nextcloud login has expired. Sign in again to continue.")
             403 -> CloudError.PermissionDenied("You do not have permission to perform this operation.")

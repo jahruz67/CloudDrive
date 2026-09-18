@@ -49,7 +49,7 @@ class MetadataIndexWorker @AssistedInject constructor(
 
 @Singleton
 class WorkMetadataIndexScheduler @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) : MetadataIndexScheduler {
     private val workManager get() = WorkManager.getInstance(context)
 
