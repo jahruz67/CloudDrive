@@ -43,7 +43,19 @@ jobs:
 
       - name: Prepare release asset
         shell: bash
+        env:
+          ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+          ANDROID_SIGNING_ALIAS: ${{ secrets.ANDROID_SIGNING_ALIAS }}
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
+
+          : "${ANDROID_SIGNING_KEYSTORE:?Add the ANDROID_SIGNING_KEYSTORE repository secret}"
+          : "${ANDROID_SIGNING_ALIAS:?Add the ANDROID_SIGNING_ALIAS repository secret}"
+          : "${ANDROID_SIGNING_STORE_PASSWORD:?Add the ANDROID_SIGNING_STORE_PASSWORD repository secret}"
+          : "${ANDROID_SIGNING_KEY_PASSWORD:?Add the ANDROID_SIGNING_KEY_PASSWORD repository secret}"
+
           mkdir -p release
           apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
           if [[ -z "$apk_path" ]]; then
@@ -51,7 +63,26 @@ jobs:
             find app/build/outputs -maxdepth 4 -type f -print >&2 || true
             exit 1
           fi
-          cp "$apk_path" "release/cloudapp-${RELEASE_TAG}.apk"
+
+          keystore_path="$RUNNER_TEMP/cloudapp-release.jks"
+          trap 'rm -f "$keystore_path"' EXIT
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE" | base64 --decode > "$keystore_path"
+
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          if [[ -z "$apksigner_path" ]]; then
+            echo "Android SDK apksigner was not found." >&2
+            exit 1
+          fi
+
+          release_apk="release/cloudapp-${RELEASE_TAG}.apk"
+          "$apksigner_path" sign \
+            --ks "$keystore_path" \
+            --ks-key-alias "$ANDROID_SIGNING_ALIAS" \
+            --ks-pass env:ANDROID_SIGNING_STORE_PASSWORD \
+            --key-pass env:ANDROID_SIGNING_KEY_PASSWORD \
+            --out "$release_apk" \
+            "$apk_path"
+          "$apksigner_path" verify --verbose --print-certs "$release_apk"
 
       - name: Create GitHub Release and upload APK
         uses: softprops/action-gh-release@v2

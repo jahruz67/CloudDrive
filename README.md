@@ -17,6 +17,19 @@ CloudDrive is a native Android virtual-drive client for a single Nextcloud accou
 
 The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
+## Release signing
+
+GitHub releases are signed before their APK is uploaded. Configure these Actions
+repository secrets before running the release workflow:
+
+- `ANDROID_SIGNING_KEYSTORE`: the release keystore encoded as a single-line Base64 value
+- `ANDROID_SIGNING_ALIAS`: the key alias in that keystore
+- `ANDROID_SIGNING_STORE_PASSWORD`: the keystore password
+- `ANDROID_SIGNING_KEY_PASSWORD`: the key password
+
+Keep the keystore and passwords backed up. Every release must use the same key so
+Android can install future versions as updates.
+
 ## Test
 
 ```powershell
@@ -33,4 +46,3 @@ The connected test command requires a running emulator or attached device. Serve
 - Android Files exposes one `CloudDrive` provider root.
 - Temporary content is limited to 1 GB and offline content is not evicted.
 - User uploads run through a persistent transfer queue. No camera, media, or folder backup exists.
-
