@@ -194,6 +194,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val cacheManager: CacheManager,
     private val repository: CloudRepository,
+    private val indexScheduler: MetadataIndexScheduler,
 ) : ViewModel() {
     val settings = settingsRepository.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
     private val cacheBytesMutable = MutableStateFlow(0L)
@@ -203,6 +204,11 @@ class SettingsViewModel @Inject constructor(
     fun setWifiOnly(value: Boolean) { viewModelScope.launch { settingsRepository.setWifiOnly(value) } }
     fun setConcurrent(value: Int) { viewModelScope.launch { settingsRepository.setMaxTransfers(value) } }
     fun clearCache() { viewModelScope.launch { cacheManager.clearDisposable(); refreshCache() } }
+    fun refreshCloudIndex() { viewModelScope.launch { repository.refreshCloudIndex() } }
+    fun setIndexPaused(paused: Boolean) { viewModelScope.launch {
+        settingsRepository.setMetadataIndexPaused(paused)
+        if (paused) indexScheduler.pause() else indexScheduler.resume()
+    } }
     fun logout() { viewModelScope.launch { repository.logout() } }
     private fun refreshCache() { viewModelScope.launch { cacheBytesMutable.value = cacheManager.disposableBytes() } }
 }

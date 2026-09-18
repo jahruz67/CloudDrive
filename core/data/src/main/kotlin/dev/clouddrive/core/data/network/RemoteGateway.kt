@@ -19,11 +19,11 @@ interface RemoteGateway {
     suspend fun copy(fromPath: String, toPath: String, overwrite: Boolean = false): RemoteNode
     suspend fun setFavorite(path: String, favorite: Boolean)
     suspend fun download(path: String, destination: File, offset: Long = 0, ifRange: String? = null, progress: suspend (Long, Long) -> Unit = { _, _ -> }): DownloadResponse
+    suspend fun downloadPreview(path: String, width: Int, height: Int, destination: File): File
     suspend fun upload(path: String, body: RequestBody, ifMatch: String? = null, ifNoneMatch: Boolean = false, progress: suspend (Long, Long) -> Unit = { _, _ -> }): RemoteNode
     suspend fun uploadChunk(uploadId: String, destinationPath: String, chunkNumber: Int, totalBytes: Long, body: RequestBody)
-    suspend fun assembleChunks(uploadId: String, destinationPath: String, totalBytes: Long): RemoteNode
+    suspend fun assembleChunks(uploadId: String, destinationPath: String, totalBytes: Long, ifMatch: String? = null, ifNoneMatch: Boolean = false): RemoteNode
     suspend fun abortChunks(uploadId: String)
     suspend fun quota(): StorageQuota
     suspend fun revokeCredential()
 }
-

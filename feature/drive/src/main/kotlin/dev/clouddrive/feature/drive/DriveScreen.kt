@@ -105,7 +105,14 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
 
     Column(modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(if (state.path == "/") "My Cloud" else state.path.substringAfterLast('/')) },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (state.path == "/") {
+                        Icon(Icons.Default.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(if (state.path == "/") "My Cloud" else state.path.substringAfterLast('/'))
+                }
+            },
             navigationIcon = {
                 if (state.path != "/") IconButton(onClick = { viewModel.navigateUp() }) { Icon(Icons.Default.ArrowBack, "Up") }
             },
@@ -244,10 +251,10 @@ private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit) {
             DropdownMenuItem({ Text(if (node.isFavorite) "Remove favorite" else "Favorite") }, { expanded = false; onAction(NodeAction.FAVORITE) }, leadingIcon = { Icon(Icons.Default.Star, null) })
             if (!node.isDirectory) DropdownMenuItem({ Text(if (node.cacheState == CacheState.OFFLINE) "Remove offline copy" else "Available offline") }, { expanded = false; onAction(NodeAction.OFFLINE) }, leadingIcon = { Icon(Icons.Default.OfflinePin, null) })
             if (!node.isDirectory) DropdownMenuItem({ Text("Share") }, { expanded = false; onAction(NodeAction.SHARE) }, leadingIcon = { Icon(Icons.Default.Share, null) })
-            if (node.canRename) DropdownMenuItem({ Text("Rename") }, { expanded = false; onAction(NodeAction.RENAME) })
+            if (node.canRename) DropdownMenuItem({ Text("Rename") }, { expanded = false; onAction(NodeAction.RENAME) }, leadingIcon = { Icon(Icons.Default.Edit, null) })
             if (node.canWrite) {
-                DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) })
-                DropdownMenuItem({ Text("Copy") }, { expanded = false; onAction(NodeAction.COPY) })
+                DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
+                DropdownMenuItem({ Text("Copy") }, { expanded = false; onAction(NodeAction.COPY) }, leadingIcon = { Icon(Icons.Default.FileCopy, null) })
             }
             if (node.canDelete) DropdownMenuItem({ Text("Delete") }, { expanded = false; onAction(NodeAction.DELETE) }, leadingIcon = { Icon(Icons.Default.Delete, null) })
         }
@@ -282,7 +289,7 @@ private fun TextInputDialog(title: String, initial: String, hint: String, onDism
 private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hiltViewModel()) {
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("Offline") })
+        TopAppBar(title = { ScreenTitle(Icons.Default.CloudDownload, "Offline") })
         if (nodes.isEmpty()) EmptyFiles("Files you make available offline appear here")
         else LazyColumn { items(nodes, key = RemoteNode::documentId) { node -> FileRow(node, false, {}, {}) { if (it == NodeAction.OFFLINE) viewModel.remove(node) } } }
     }
@@ -292,7 +299,7 @@ private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hilt
 private fun TransfersScreen(modifier: Modifier, viewModel: TransfersViewModel = hiltViewModel()) {
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("Transfers") })
+        TopAppBar(title = { ScreenTitle(Icons.Default.CloudSync, "Transfers") })
         if (transfers.isEmpty()) EmptyFiles("No transfers yet")
         else LazyColumn { items(transfers, key = Transfer::id) { transfer ->
             ListItem(
@@ -315,29 +322,33 @@ private fun SettingsScreen(modifier: Modifier, viewModel: SettingsViewModel = hi
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val cacheBytes by viewModel.cacheBytes.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("Settings") })
+        TopAppBar(title = { ScreenTitle(Icons.Default.CloudCircle, "Settings") })
         LazyColumn {
             item { SettingsHeader("Appearance") }
-            item { ChoiceSetting("Theme", settings.themeMode.name.lowercase().replaceFirstChar(Char::uppercase), ThemeMode.entries, { it.name.lowercase().replaceFirstChar(Char::uppercase) }, viewModel::setTheme) }
+            item { ChoiceSetting("Theme", settings.themeMode.name.lowercase().replaceFirstChar(Char::uppercase), ThemeMode.entries, { it.name.lowercase().replaceFirstChar(Char::uppercase) }, Icons.Default.Palette, viewModel::setTheme) }
             item { SettingsHeader("Transfers") }
-            item { SwitchSetting("Wi-Fi only", "Queue transfers while using mobile data", settings.wifiOnly, viewModel::setWifiOnly) }
-            item { ChoiceSetting("Concurrent transfers", settings.maxConcurrentTransfers.toString(), (1..4).toList(), Int::toString, viewModel::setConcurrent) }
+            item { SwitchSetting("Wi-Fi only", "Queue transfers while using mobile data", settings.wifiOnly, Icons.Default.Wifi, viewModel::setWifiOnly) }
+            item { ChoiceSetting("Concurrent transfers", settings.maxConcurrentTransfers.toString(), (1..4).toList(), Int::toString, Icons.Default.SwapVert, viewModel::setConcurrent) }
             item { SettingsHeader("Cache") }
-            item { ListItem(headlineContent = { Text("Temporary cache") }, supportingContent = { Text("${formatBytes(cacheBytes)} used · 1 GB limit · files older than 7 days may be removed") }, trailingContent = { TextButton(onClick = viewModel::clearCache) { Text("Clear") } }) }
+            item { ListItem(headlineContent = { Text("Temporary cache") }, supportingContent = { Text("${formatBytes(cacheBytes)} used · 1 GB limit · files older than 7 days may be removed") }, leadingContent = { Icon(Icons.Default.CloudQueue, null, tint = MaterialTheme.colorScheme.primary) }, trailingContent = { TextButton(onClick = viewModel::clearCache) { Text("Clear") } }) }
+            item { SettingsHeader("Cloud index") }
+            item { ListItem(headlineContent = { Text("Refresh cloud index") }, supportingContent = { Text("Update metadata only; cloud file contents are not downloaded") }, leadingContent = { Icon(Icons.Default.Refresh, null, tint = MaterialTheme.colorScheme.primary) }, trailingContent = { TextButton(onClick = viewModel::refreshCloudIndex) { Text("Refresh") } }) }
+            item { SwitchSetting("Pause indexing", "Keep cached listings but stop the background metadata crawl", settings.metadataIndexPaused, Icons.Default.Pause, viewModel::setIndexPaused) }
             item { SettingsHeader("Account") }
-            item { ListItem(headlineContent = { Text("Remove account") }, supportingContent = { Text("Revoke this app password and remove local metadata") }, trailingContent = { TextButton(onClick = viewModel::logout) { Text("Log out") } }) }
+            item { ListItem(headlineContent = { Text("Remove account") }, supportingContent = { Text("Revoke this app password and remove local metadata") }, leadingContent = { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.error) }, trailingContent = { TextButton(onClick = viewModel::logout) { Text("Log out") } }) }
             item { Spacer(Modifier.height(32.dp)) }
         }
     }
 }
 
 @Composable private fun SettingsHeader(text: String) { Text(text, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(16.dp, 20.dp, 16.dp, 4.dp)) }
-@Composable private fun SwitchSetting(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) { ListItem(headlineContent = { Text(title) }, supportingContent = { Text(subtitle) }, trailingContent = { Switch(checked, onChecked) }) }
+@Composable private fun ScreenTitle(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(title) } }
+@Composable private fun SwitchSetting(title: String, subtitle: String, checked: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, onChecked: (Boolean) -> Unit) { ListItem(headlineContent = { Text(title) }, supportingContent = { Text(subtitle) }, leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }, trailingContent = { Switch(checked, onChecked) }) }
 
 @Composable
-private fun <T> ChoiceSetting(title: String, current: String, choices: List<T>, label: (T) -> String, onChoose: (T) -> Unit) {
+private fun <T> ChoiceSetting(title: String, current: String, choices: List<T>, label: (T) -> String, icon: androidx.compose.ui.graphics.vector.ImageVector, onChoose: (T) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Box { ListItem(headlineContent = { Text(title) }, supportingContent = { Text(current) }, modifier = Modifier.fillMaxWidth(), trailingContent = { IconButton({ expanded = true }) { Icon(Icons.Default.ExpandMore, "Choose") } }); DropdownMenu(expanded, { expanded = false }) { choices.forEach { value -> DropdownMenuItem({ Text(label(value)) }, { expanded = false; onChoose(value) }) } } }
+    Box { ListItem(headlineContent = { Text(title) }, supportingContent = { Text(current) }, leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.fillMaxWidth(), trailingContent = { IconButton({ expanded = true }) { Icon(Icons.Default.ExpandMore, "Choose") } }); DropdownMenu(expanded, { expanded = false }) { choices.forEach { value -> DropdownMenuItem({ Text(label(value)) }, { expanded = false; onChoose(value) }) } } }
 }
 
 private fun fileSubtitle(node: RemoteNode): String = buildString {

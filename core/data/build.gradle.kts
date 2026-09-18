@@ -26,6 +26,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.datastore)
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.hilt.work)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
@@ -37,6 +39,7 @@ dependencies {
     }
     ksp(libs.androidx.room.compiler)
     ksp(libs.hilt.compiler)
+    ksp(libs.androidx.hilt.compiler)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
     testImplementation(libs.turbine)

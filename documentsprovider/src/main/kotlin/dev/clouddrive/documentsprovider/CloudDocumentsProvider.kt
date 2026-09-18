@@ -35,6 +35,7 @@ class CloudDocumentsProvider : DocumentsProvider() {
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: ROOT_PROJECTION)
         val account = blocking { dependencies.accountDao().get() } ?: return cursor
+        val quota = runCatching { blocking { dependencies.gateway().quota() } }.getOrNull()
         cursor.newRow().apply {
             add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
             add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_DOCUMENT_ID)
@@ -43,7 +44,7 @@ class CloudDocumentsProvider : DocumentsProvider() {
             add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_upload)
             add(DocumentsContract.Root.COLUMN_FLAGS, DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_SEARCH or DocumentsContract.Root.FLAG_SUPPORTS_RECENTS)
             add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
-            add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, -1L)
+            add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, quota?.totalBytes?.minus(quota.usedBytes)?.coerceAtLeast(0) ?: -1L)
         }
         return cursor
     }
@@ -57,15 +58,21 @@ class CloudDocumentsProvider : DocumentsProvider() {
     override fun queryChildDocuments(parentDocumentId: String, projection: Array<out String>?, sortOrder: String?): Cursor {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
         val parentPath = if (parentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(parentDocumentId).path
-        blocking { dependencies.nodeDao().children("primary", parentPath) }.forEach { includeNode(cursor, it.toModel()) }
-        cursor.setExtras(Bundle().apply { putBoolean(DocumentsContract.EXTRA_LOADING, true) })
-        refresh(parentPath, parentDocumentId)
+        val snapshot = blocking { dependencies.folderSync().snapshot(parentPath) }
+        if (snapshot.state == FolderLoadState.NEVER_LOADED || (snapshot.state == FolderLoadState.FAILED && snapshot.loadedAt == null)) {
+            blocking { dependencies.folderSync().refresh(parentPath, force = true) }
+        } else if (snapshot.state == FolderLoadState.STALE || snapshot.state == FolderLoadState.FAILED) {
+            dependencies.folderSync().refreshAsync(parentPath, force = true)
+        }
+        blocking { dependencies.folderSync().cachedChildren(parentPath) }.forEach { includeNode(cursor, it) }
+        val loading = snapshot.state == FolderLoadState.STALE || (snapshot.state == FolderLoadState.FAILED && snapshot.loadedAt != null)
+        cursor.setExtras(Bundle().apply { putBoolean(DocumentsContract.EXTRA_LOADING, loading) })
         return cursor
     }
 
     override fun queryRecentDocuments(rootId: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
-        blocking { dependencies.nodeDao().children("primary", "/") }.sortedByDescending { it.modifiedAtEpochMillis }.take(100)
+        blocking { dependencies.nodeDao().recent("primary", 100) }
             .forEach { includeNode(cursor, it.toModel()) }
         return cursor
     }
@@ -73,7 +80,9 @@ class CloudDocumentsProvider : DocumentsProvider() {
     override fun querySearchDocuments(rootId: String, query: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
         blocking {
-            dependencies.gateway().search(query, "/").also { dependencies.nodeDao().upsertAll(it.map(RemoteNode::toEntity)) }
+            dependencies.repository().search(query, "/").let { result ->
+                when (result) { is CloudResult.Success -> result.value; is CloudResult.Failure -> throw result.error }
+            }
         }.forEach { includeNode(cursor, it) }
         return cursor
     }
@@ -99,7 +108,8 @@ class CloudDocumentsProvider : DocumentsProvider() {
 
     override fun openDocumentThumbnail(documentId: String, sizeHint: Point, signal: CancellationSignal?): AssetFileDescriptor {
         val node = requireNode(documentId)
-        val file = blocking { dependencies.cacheManager().acquire(node) }
+        signal?.throwIfCanceled()
+        val file = blocking { dependencies.cacheManager().thumbnail(node, sizeHint.x, sizeHint.y) }
         val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
         return AssetFileDescriptor(descriptor, 0, AssetFileDescriptor.UNKNOWN_LENGTH)
     }
@@ -108,59 +118,41 @@ class CloudDocumentsProvider : DocumentsProvider() {
         val parent = if (parentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(parentDocumentId).path
         val path = RemotePath.child(parent, displayName)
         val node = blocking {
-            if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) dependencies.gateway().createFolder(path)
-            else dependencies.gateway().createEmptyFile(path)
+            if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) resultValue(dependencies.repository().createFolder(parent, displayName))
+            else dependencies.gateway().createEmptyFile(path).also { dependencies.nodeDao().upsert(it.toEntity()) }
         }
-        blocking { dependencies.nodeDao().upsert(node.toEntity()) }
-        notifyParent(parentDocumentId)
+        dependencies.folderSync().notifyFolder(parent)
         return node.documentId
     }
 
     override fun renameDocument(documentId: String, displayName: String): String {
         val node = requireNode(documentId)
-        val updated = blocking { dependencies.gateway().move(node.path, RemotePath.child(node.parentPath, displayName)) }
-        blocking { dependencies.nodeDao().upsert(updated.toEntity()) }
-        notifyParent(documentId)
+        val updated = blocking { resultValue(dependencies.repository().rename(node, displayName)) }
         return updated.documentId
     }
 
     override fun moveDocument(sourceDocumentId: String, sourceParentDocumentId: String, targetParentDocumentId: String): String {
         val node = requireNode(sourceDocumentId)
         val target = if (targetParentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(targetParentDocumentId).path
-        val updated = blocking { dependencies.gateway().move(node.path, RemotePath.child(target, node.name)) }
-        blocking { dependencies.nodeDao().upsert(updated.toEntity()) }
-        notifyParent(sourceParentDocumentId); notifyParent(targetParentDocumentId)
+        val updated = blocking { resultValue(dependencies.repository().move(node, target)) }
         return updated.documentId
     }
 
     override fun copyDocument(sourceDocumentId: String, targetParentDocumentId: String): String {
         val node = requireNode(sourceDocumentId)
         val target = if (targetParentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(targetParentDocumentId).path
-        val copied = blocking { dependencies.gateway().copy(node.path, RemotePath.child(target, node.name)) }
-        blocking { dependencies.nodeDao().upsert(copied.toEntity()) }
-        notifyParent(targetParentDocumentId)
+        val copied = blocking { resultValue(dependencies.repository().copy(node, target)) }
         return copied.documentId
     }
 
     override fun deleteDocument(documentId: String) {
         val node = requireNode(documentId)
-        blocking { dependencies.gateway().delete(node.path); dependencies.nodeDao().deleteTree(documentId, "${node.path}/%") }
-        notifyParent(documentId)
+        blocking { resultValue(dependencies.repository().delete(node)) }
     }
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean {
         val parentPath = if (parentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(parentDocumentId).path.trimEnd('/') + "/"
         return requireNode(documentId).path.startsWith(parentPath)
-    }
-
-    private fun refresh(path: String, parentDocumentId: String) {
-        scope.launch {
-            runCatching {
-                val rows = dependencies.gateway().listFolder(path)
-                dependencies.nodeDao().upsertAll(rows.map(RemoteNode::toEntity))
-            }
-            notifyParent(parentDocumentId)
-        }
     }
 
     private fun includeRoot(cursor: MatrixCursor) {
@@ -195,13 +187,12 @@ class CloudDocumentsProvider : DocumentsProvider() {
     private fun requireNode(documentId: String): RemoteNode = blocking { dependencies.nodeDao().get(documentId)?.toModel() }
         ?: throw FileNotFoundException("Unknown cloud document")
 
-    private fun notifyParent(documentId: String) {
-        context?.contentResolver?.notifyChange(DocumentsContract.buildChildDocumentsUri(authority, documentId), null, false)
-        context?.contentResolver?.notifyChange(DocumentsContract.buildDocumentUri(authority, documentId), null, false)
-    }
-
     private fun appContext(): Context = checkNotNull(context)
     private fun <T> blocking(block: suspend () -> T): T = runBlocking(Dispatchers.IO) { block() }
+    private fun <T> resultValue(result: CloudResult<T>): T = when (result) {
+        is CloudResult.Success -> result.value
+        is CloudResult.Failure -> throw FileNotFoundException(result.error.message)
+    }
 
     @EntryPoint
     @InstallIn(SingletonComponent::class)
@@ -211,6 +202,8 @@ class CloudDocumentsProvider : DocumentsProvider() {
         fun gateway(): RemoteGateway
         fun cacheManager(): CacheManager
         fun transferManager(): TransferManager
+        fun repository(): CloudRepository
+        fun folderSync(): FolderSyncCoordinator
     }
 
     private companion object {

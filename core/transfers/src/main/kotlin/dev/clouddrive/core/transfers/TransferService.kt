@@ -29,9 +29,11 @@ class TransferService : Service() {
     @Inject lateinit var gateway: RemoteGateway
     @Inject lateinit var repository: CloudRepository
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var folderSync: FolderSyncCoordinator
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runner: Job? = null
+    private val progressSamples = mutableMapOf<String, Pair<Long, Long>>()
 
     override fun onCreate() {
         super.onCreate()
@@ -40,8 +42,11 @@ class TransferService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification("Preparing transfers…", 0, 0))
-        if (runner?.isActive != true) runner = serviceScope.launch { drainQueue() }
-        return START_NOT_STICKY
+        if (runner?.isActive != true) runner = serviceScope.launch {
+            transferDao.requeueInterrupted(now())
+            drainQueue()
+        }
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -74,9 +79,20 @@ class TransferService : Service() {
         transferDao.updateState(transfer.id, TransferState.RUNNING, now())
         updateNotification(transfer.displayName, transfer.bytesTransferred, transfer.totalBytes)
         try {
-            when (transfer.direction) {
-                TransferDirection.UPLOAD -> upload(transfer)
-                TransferDirection.DOWNLOAD -> download(transfer)
+            var attempt = 0
+            while (true) {
+                try {
+                    when (transfer.direction) {
+                        TransferDirection.UPLOAD -> upload(transfer)
+                        TransferDirection.DOWNLOAD -> download(transfer)
+                    }
+                    break
+                } catch (error: Exception) {
+                    if (error is TransferControlException || error is CancellationException || error is CloudError.Authentication ||
+                        error is CloudError.PermissionDenied || error is CloudError.QuotaExceeded || error is CloudError.Conflict || attempt >= 3) throw error
+                    delay((1L shl attempt) * 2_000L)
+                    attempt++
+                }
             }
             ensureRunning(transfer.id)
             transferDao.updateState(transfer.id, TransferState.COMPLETED, now())
@@ -85,7 +101,7 @@ class TransferService : Service() {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            transferDao.updateState(transfer.id, TransferState.FAILED, now(), error.message ?: "Transfer failed")
+            transferDao.updateState(transfer.id, TransferState.FAILED, now(), friendlyError(error))
         }
     }
 
@@ -101,26 +117,27 @@ class TransferService : Service() {
 
     private suspend fun upload(transfer: Transfer) {
         val staged = transfer.localPath?.let(::File)?.takeIf(File::exists) ?: stageUri(transfer)
-        val updated = transfer.copy(localPath = staged.absolutePath, totalBytes = staged.length(), updatedAt = Instant.now())
+        val updated = transfer.copy(localPath = staged.absolutePath, totalBytes = staged.length(), state = TransferState.RUNNING, updatedAt = Instant.now())
         transferDao.upsert(updated.toEntity())
-        if (staged.length() < CHUNK_SIZE) {
+        val uploaded = if (staged.length() < CHUNK_SIZE) {
             val mediaType = transfer.contentUri?.let(Uri::parse)?.let(contentResolver::getType)?.toMediaTypeOrNull()
             val body = staged.asRequestBody(mediaType)
             try {
-                gateway.upload(transfer.remotePath, body, ifMatch = transfer.baseEtag) { sent, total -> progress(transfer.id, sent, total) }
+                gateway.upload(transfer.remotePath, body, ifMatch = transfer.baseEtag, ifNoneMatch = transfer.baseEtag == null) { sent, total -> progress(transfer.id, sent, total) }
             } catch (conflict: CloudError.Conflict) {
                 val original = transfer.remotePath.substringAfterLast('/')
                 val parent = RemotePath.parent(transfer.remotePath)
                 var attempt = 0
-                while (true) {
+                var result: RemoteNode? = null
+                while (result == null) {
                     val conflictPath = RemotePath.child(parent, ConflictNames.candidate(original, java.time.LocalDateTime.now(), attempt))
                     try {
-                        gateway.upload(conflictPath, staged.asRequestBody(mediaType), ifNoneMatch = true) { sent, total -> progress(transfer.id, sent, total) }
-                        break
+                        result = gateway.upload(conflictPath, staged.asRequestBody(mediaType), ifNoneMatch = true) { sent, total -> progress(transfer.id, sent, total) }
                     } catch (_: CloudError.Conflict) {
                         attempt++
                     }
                 }
+                requireNotNull(result)
             }
         } else {
             val uploadId = transfer.uploadId ?: "clouddrive-${transfer.id}"
@@ -134,8 +151,23 @@ class TransferService : Service() {
                 transferDao.upsert(updated.copy(uploadId = uploadId, completedChunks = chunk, bytesTransferred = minOf(chunk * CHUNK_SIZE, staged.length())).toEntity())
                 progress(transfer.id, minOf(chunk * CHUNK_SIZE, staged.length()), staged.length())
             }
-            gateway.assembleChunks(uploadId, transfer.remotePath, staged.length())
+            try {
+                gateway.assembleChunks(uploadId, transfer.remotePath, staged.length(), ifMatch = transfer.baseEtag, ifNoneMatch = transfer.baseEtag == null)
+            } catch (_: CloudError.Conflict) {
+                val original = transfer.remotePath.substringAfterLast('/')
+                val parent = RemotePath.parent(transfer.remotePath)
+                var attempt = 0
+                var result: RemoteNode? = null
+                while (result == null) {
+                    val conflictPath = RemotePath.child(parent, ConflictNames.candidate(original, java.time.LocalDateTime.now(), attempt))
+                    try { result = gateway.assembleChunks(uploadId, conflictPath, staged.length(), ifNoneMatch = true) }
+                    catch (_: CloudError.Conflict) { attempt++ }
+                }
+                requireNotNull(result)
+            }
         }
+        nodeDao.upsert(uploaded.toEntity())
+        folderSync.notifyFolder(uploaded.parentPath)
         staged.delete()
     }
 
@@ -162,7 +194,13 @@ class TransferService : Service() {
 
     private suspend fun progress(id: String, bytes: Long, total: Long) {
         ensureRunning(id)
-        transferDao.updateProgress(id, bytes, total, 0, now())
+        val timestamp = now()
+        val previous = progressSamples.put(id, bytes to timestamp)
+        val speed = previous?.let { (oldBytes, oldTime) ->
+            val elapsed = (timestamp - oldTime).coerceAtLeast(1)
+            ((bytes - oldBytes).coerceAtLeast(0) * 1_000 / elapsed)
+        } ?: 0L
+        transferDao.updateProgress(id, bytes, total, speed, timestamp)
         updateNotification("Transferring", bytes, total)
     }
 
@@ -198,6 +236,14 @@ class TransferService : Service() {
     }
 
     private fun now() = Instant.now().toEpochMilli()
+
+    private fun friendlyError(error: Exception): String = when (error) {
+        is CloudError.Authentication -> "Your login expired. Sign in again, then retry this transfer."
+        is CloudError.PermissionDenied -> "Nextcloud denied permission for this transfer."
+        is CloudError.QuotaExceeded -> "There is not enough storage quota on Nextcloud."
+        is CloudError.Network -> error.message ?: "The network connection was interrupted."
+        else -> error.message ?: "Transfer failed. Try again."
+    }
 
     private companion object {
         const val CHANNEL_ID = "file_transfers"

@@ -26,6 +26,7 @@ class DefaultCacheManager @Inject constructor(
     private val contentDir by lazy { File(context.cacheDir, "cloud-content").apply { mkdirs() } }
     private val offlineDir by lazy { File(context.filesDir, "offline-content").apply { mkdirs() } }
     private val workingDir by lazy { File(context.filesDir, "pending-edits").apply { mkdirs() } }
+    private val thumbnailDir by lazy { File(context.cacheDir, "cloud-thumbnails").apply { mkdirs() } }
 
     override suspend fun acquire(node: RemoteNode): File = withContext(Dispatchers.IO) {
         val pinned = pinDao.get(node.documentId) != null
@@ -40,6 +41,7 @@ class DefaultCacheManager @Inject constructor(
         val response = gateway.download(node.path, partial, offset, node.etag)
         if (target.exists()) target.delete()
         check(partial.renameTo(target)) { "Unable to finalize cached file" }
+        existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
         cacheDao.upsert(
             CacheEntryEntity(
                 id = "${if (pinned) "offline" else "content"}:${node.documentId}", nodeDocumentId = node.documentId,
@@ -48,6 +50,7 @@ class DefaultCacheManager @Inject constructor(
             ),
         )
         nodeDao.updateCacheState(node.documentId, if (pinned) CacheState.OFFLINE else CacheState.CACHED)
+        maintain()
         target
     }
 
@@ -83,11 +86,7 @@ class DefaultCacheManager @Inject constructor(
     override suspend fun clearDisposable(): Long = withContext(Dispatchers.IO) {
         var freed = 0L
         cacheDao.disposableOldestFirst().forEach { entry ->
-            val file = File(entry.absolutePath)
-            freed += file.length()
-            file.delete()
-            cacheDao.delete(entry.id)
-            nodeDao.updateCacheState(entry.nodeDocumentId, CacheState.CLOUD_ONLY)
+            freed += removeEntry(entry)
         }
         freed
     }
@@ -97,10 +96,7 @@ class DefaultCacheManager @Inject constructor(
         var freed = 0L
         if (current <= limitBytes) return@withContext 0L
         for (entry in cacheDao.disposableOldestFirst()) {
-            val size = File(entry.absolutePath).length()
-            File(entry.absolutePath).delete()
-            cacheDao.delete(entry.id)
-            nodeDao.updateCacheState(entry.nodeDocumentId, CacheState.CLOUD_ONLY)
+            val size = removeEntry(entry)
             current -= size
             freed += size
             if (current <= (limitBytes * 9 / 10)) break
@@ -110,9 +106,50 @@ class DefaultCacheManager @Inject constructor(
 
     override suspend fun disposableBytes() = cacheDao.disposableBytes()
 
+    override suspend fun thumbnail(node: RemoteNode, width: Int, height: Int): File = withContext(Dispatchers.IO) {
+        if (!node.hasPreview) throw dev.clouddrive.core.model.CloudError.Unsupported("A preview is not available for this file")
+        val kind = "thumbnail:${width.coerceAtLeast(1)}x${height.coerceAtLeast(1)}"
+        val existing = cacheDao.find(node.documentId, kind)
+        if (existing != null && existing.etag == node.etag && File(existing.absolutePath).isFile) {
+            cacheDao.upsert(existing.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
+            return@withContext File(existing.absolutePath)
+        }
+        val target = File(thumbnailDir, "${key(node)}-${width}x${height}")
+        gateway.downloadPreview(node.path, width, height, target)
+        existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
+        cacheDao.upsert(CacheEntryEntity(
+            id = "$kind:${node.documentId}", nodeDocumentId = node.documentId, absolutePath = target.absolutePath,
+            etag = node.etag, size = target.length(), lastAccessedEpochMillis = System.currentTimeMillis(),
+            kind = kind, disposable = true,
+        ))
+        maintain()
+        target
+    }
+
+    override suspend fun maintain(limitBytes: Long, maxAgeDays: Int): Long = withContext(Dispatchers.IO) {
+        val cutoff = System.currentTimeMillis() - maxAgeDays.coerceAtLeast(1) * 24L * 60 * 60 * 1_000
+        var freed = 0L
+        cacheDao.expired(cutoff).forEach { freed += removeEntry(it) }
+        cacheDao.workingEntries().filter { it.lastAccessedEpochMillis < cutoff }.forEach { freed += removeEntry(it) }
+        listOf(contentDir, thumbnailDir, workingDir).forEach { dir ->
+            dir.listFiles()?.filter { it.name.endsWith(".partial") && it.lastModified() < cutoff }?.forEach {
+                freed += it.length(); it.delete()
+            }
+        }
+        freed + evictToLimit(limitBytes)
+    }
+
+    private suspend fun removeEntry(entry: CacheEntryEntity): Long {
+        val file = File(entry.absolutePath)
+        val size = file.length()
+        file.delete()
+        cacheDao.delete(entry.id)
+        if (entry.kind == "content") nodeDao.updateCacheState(entry.nodeDocumentId, CacheState.CLOUD_ONLY)
+        return size
+    }
+
     private fun key(node: RemoteNode): String {
         val digest = MessageDigest.getInstance("SHA-256").digest("${node.documentId}:${node.etag}".toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }
 }
-

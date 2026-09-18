@@ -26,10 +26,16 @@ interface RemoteNodeDao {
 
     @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId ORDER BY modifiedAtEpochMillis DESC LIMIT :limit")
     fun observeRecent(accountId: String, limit: Int): Flow<List<RemoteNodeEntity>>
+    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId ORDER BY modifiedAtEpochMillis DESC LIMIT :limit")
+    suspend fun recent(accountId: String, limit: Int): List<RemoteNodeEntity>
+    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND name LIKE '%' || :query || '%' AND (:scope = '/' OR path LIKE :scope || '/%') ORDER BY isDirectory DESC, name COLLATE NOCASE LIMIT 250")
+    suspend fun searchCached(accountId: String, query: String, scope: String): List<RemoteNodeEntity>
 
     @Query("SELECT * FROM remote_nodes WHERE documentId = :documentId") suspend fun get(documentId: String): RemoteNodeEntity?
     @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND path = :path") suspend fun getByPath(accountId: String, path: String): RemoteNodeEntity?
     @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND parentPath = :path") suspend fun children(accountId: String, path: String): List<RemoteNodeEntity>
+    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND isDirectory = 1 AND path NOT IN (SELECT path FROM folder_snapshots WHERE accountId = :accountId AND state IN ('CURRENT', 'EMPTY')) ORDER BY path LIMIT :limit")
+    suspend fun unindexedDirectories(accountId: String, limit: Int): List<RemoteNodeEntity>
     @Upsert suspend fun upsert(node: RemoteNodeEntity)
     @Upsert suspend fun upsertAll(nodes: List<RemoteNodeEntity>)
     @Query("DELETE FROM remote_nodes WHERE accountId = :accountId AND parentPath = :parentPath AND documentId NOT IN (:keepIds)")
@@ -42,6 +48,15 @@ interface RemoteNodeDao {
 }
 
 @Dao
+interface FolderSnapshotDao {
+    @Query("SELECT * FROM folder_snapshots WHERE accountId = :accountId AND path = :path LIMIT 1")
+    suspend fun get(accountId: String, path: String): FolderSnapshotEntity?
+    @Upsert suspend fun upsert(snapshot: FolderSnapshotEntity)
+    @Query("DELETE FROM folder_snapshots") suspend fun clear()
+    @Query("UPDATE folder_snapshots SET state = 'STALE' WHERE accountId = :accountId") suspend fun markAllStale(accountId: String)
+}
+
+@Dao
 interface TransferDao {
     @Query("SELECT * FROM transfers ORDER BY createdAtEpochMillis DESC") fun observeAll(): Flow<List<TransferEntity>>
     @Query("SELECT * FROM transfers WHERE id = :id") suspend fun get(id: String): TransferEntity?
@@ -51,6 +66,7 @@ interface TransferDao {
     suspend fun updateState(id: String, state: TransferState, now: Long, error: String? = null)
     @Query("UPDATE transfers SET bytesTransferred = :bytes, totalBytes = :total, speedBytesPerSecond = :speed, updatedAtEpochMillis = :now WHERE id = :id")
     suspend fun updateProgress(id: String, bytes: Long, total: Long, speed: Long, now: Long)
+    @Query("UPDATE transfers SET state = 'QUEUED', updatedAtEpochMillis = :now WHERE state = 'RUNNING'") suspend fun requeueInterrupted(now: Long)
     @Query("DELETE FROM transfers") suspend fun clear()
 }
 
@@ -60,6 +76,8 @@ interface CacheDao {
     suspend fun find(documentId: String, kind: String): CacheEntryEntity?
     @Query("SELECT * FROM cache_entries WHERE disposable = 1 ORDER BY lastAccessedEpochMillis") suspend fun disposableOldestFirst(): List<CacheEntryEntity>
     @Query("SELECT COALESCE(SUM(size), 0) FROM cache_entries WHERE disposable = 1") suspend fun disposableBytes(): Long
+    @Query("SELECT * FROM cache_entries WHERE disposable = 1 AND lastAccessedEpochMillis < :cutoff ORDER BY lastAccessedEpochMillis") suspend fun expired(cutoff: Long): List<CacheEntryEntity>
+    @Query("SELECT * FROM cache_entries WHERE kind = 'working' ORDER BY lastAccessedEpochMillis") suspend fun workingEntries(): List<CacheEntryEntity>
     @Upsert suspend fun upsert(entry: CacheEntryEntity)
     @Query("DELETE FROM cache_entries WHERE id = :id") suspend fun delete(id: String)
     @Query("DELETE FROM cache_entries") suspend fun clear()
@@ -72,4 +90,3 @@ interface OfflinePinDao {
     @Query("DELETE FROM offline_pins WHERE nodeDocumentId = :documentId") suspend fun delete(documentId: String)
     @Query("DELETE FROM offline_pins") suspend fun clear()
 }
-

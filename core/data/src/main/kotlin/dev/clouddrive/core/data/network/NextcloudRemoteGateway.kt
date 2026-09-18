@@ -127,6 +127,24 @@ class NextcloudRemoteGateway @Inject constructor(
         }
     }
 
+    override suspend fun downloadPreview(path: String, width: Int, height: Int, destination: File): File = withContext(Dispatchers.IO) {
+        val credential = requireCredential()
+        val url = credential.serverUrl.toHttpUrl().newBuilder()
+            .addPathSegments("index.php/core/preview.png")
+            .addQueryParameter("file", RemotePath.normalize(path))
+            .addQueryParameter("x", width.coerceIn(32, 2048).toString())
+            .addQueryParameter("y", height.coerceIn(32, 2048).toString())
+            .addQueryParameter("a", "true")
+            .build()
+        client.newCall(Request.Builder().url(url).authenticated(credential).build()).execute().use { response ->
+            requireSuccess(response)
+            destination.parentFile?.mkdirs()
+            val body = response.body ?: throw CloudError.Network("The server returned an empty preview")
+            destination.sink().buffer().use { body.source().readAll(it) }
+        }
+        destination
+    }
+
     override suspend fun upload(path: String, body: RequestBody, ifMatch: String?, ifNoneMatch: Boolean, progress: suspend (Long, Long) -> Unit): RemoteNode = withContext(Dispatchers.IO) {
         val progressBody = ProgressRequestBody(body, progress)
         val builder = davRequest(path).put(progressBody)
@@ -149,11 +167,14 @@ class NextcloudRemoteGateway @Inject constructor(
         client.newCall(request).execute().use(::requireSuccess)
     }
 
-    override suspend fun assembleChunks(uploadId: String, destinationPath: String, totalBytes: Long): RemoteNode = withContext(Dispatchers.IO) {
+    override suspend fun assembleChunks(uploadId: String, destinationPath: String, totalBytes: Long, ifMatch: String?, ifNoneMatch: Boolean): RemoteNode = withContext(Dispatchers.IO) {
         val credential = requireCredential()
         val source = uploadFolderUrl(credential, uploadId).newBuilder().addPathSegment(".file").build()
-        val request = Request.Builder().url(source).method("MOVE", null).header("Destination", davUrl(destinationPath).toString())
-            .header("OC-Total-Length", totalBytes.toString()).authenticated(credential).build()
+        val builder = Request.Builder().url(source).method("MOVE", null).header("Destination", davUrl(destinationPath).toString())
+            .header("OC-Total-Length", totalBytes.toString()).authenticated(credential)
+        ifMatch?.let { builder.header("If-Match", it) }
+        if (ifNoneMatch) builder.header("If-None-Match", "*")
+        val request = builder.build()
         client.newCall(request).execute().use(::requireSuccess)
         stat(destinationPath)
     }
@@ -163,9 +184,13 @@ class NextcloudRemoteGateway @Inject constructor(
         executeNoContent(Request.Builder().url(uploadFolderUrl(credential, uploadId)).delete().authenticated(credential).build())
     }
 
-    override suspend fun quota(): StorageQuota {
-        val root = stat("/")
-        return StorageQuota(root.size.coerceAtLeast(0), null)
+    override suspend fun quota(): StorageQuota = withContext(Dispatchers.IO) {
+        val request = davRequest("/").method("PROPFIND", QUOTA_BODY).header("Depth", "0").build()
+        client.newCall(request).execute().use { response ->
+            requireSuccess(response)
+            val stream = response.body?.byteStream() ?: throw CloudError.Network("The server returned no quota information")
+            DavXmlParser.parseQuota(stream)
+        }
     }
 
     override suspend fun revokeCredential() {
@@ -216,10 +241,11 @@ class NextcloudRemoteGateway @Inject constructor(
         if (response.isSuccessful || response.code == 207) return
         val message = response.body?.string()?.take(500).orEmpty()
         throw when (response.code) {
-            401, 403 -> CloudError.Authentication()
+            401 -> CloudError.Authentication("Your Nextcloud login has expired. Sign in again to continue.")
+            403 -> CloudError.PermissionDenied("You do not have permission to perform this operation.")
             404 -> CloudError.NotFound()
             409, 412 -> CloudError.Conflict()
-            507 -> CloudError.QuotaExceeded()
+            413, 507 -> CloudError.QuotaExceeded("Your Nextcloud storage quota is full.")
             else -> CloudError.Network("Nextcloud returned HTTP ${response.code}${if (message.isBlank()) "" else ": $message"}")
         }
     }
@@ -234,6 +260,7 @@ class NextcloudRemoteGateway @Inject constructor(
         val XML = "application/xml; charset=utf-8".toMediaType()
         val EMPTY_BODY = ByteArray(0).toRequestBody(null)
         val PROPFIND_BODY = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:prop><oc:fileid/><d:displayname/><d:resourcetype/><d:getcontenttype/><d:getcontentlength/><oc:size/><d:getlastmodified/><d:getetag/><oc:permissions/><oc:favorite/><nc:has-preview/><oc:quota-used-bytes/><oc:quota-available-bytes/></d:prop></d:propfind>""".toRequestBody(XML)
+        val QUOTA_BODY = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:quota-used-bytes/><oc:quota-available-bytes/></d:prop></d:propfind>""".toRequestBody(XML)
         const val FAVORITE_TEMPLATE = """<?xml version="1.0"?><d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:set><d:prop><oc:favorite>{{favorite}}</oc:favorite></d:prop></d:set></d:propertyupdate>"""
         const val SEARCH_TEMPLATE = """<?xml version="1.0"?><d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:basicsearch><d:select><d:prop><oc:fileid/><d:displayname/><d:resourcetype/><d:getcontenttype/><d:getcontentlength/><oc:size/><d:getlastmodified/><d:getetag/><oc:permissions/><oc:favorite/><nc:has-preview/></d:prop></d:select><d:from><d:scope><d:href>{{scope}}</d:href><d:depth>infinity</d:depth></d:scope></d:from><d:where><d:like><d:prop><d:displayname/></d:prop><d:literal>{{query}}</d:literal></d:like></d:where><d:orderby><d:order><d:prop><d:displayname/></d:prop><d:ascending/></d:order></d:orderby></d:basicsearch></d:searchrequest>"""
         fun xmlEscape(value: String) = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
@@ -262,6 +289,23 @@ private class ProgressRequestBody(
 }
 
 private object DavXmlParser {
+    fun parseQuota(input: java.io.InputStream): StorageQuota {
+        val parser = Xml.newPullParser().apply { setInput(input, Charsets.UTF_8.name()) }
+        var used: Long? = null
+        var available: Long? = null
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG) when (parser.name?.lowercase()) {
+                "quota-used-bytes" -> used = runCatching { parser.nextText().toLong() }.getOrNull()
+                "quota-available-bytes" -> available = runCatching { parser.nextText().toLong() }.getOrNull()
+            }
+            event = parser.next()
+        }
+        val consumed = used?.coerceAtLeast(0) ?: 0L
+        val remaining = available?.takeIf { it >= 0 }
+        return StorageQuota(consumed, remaining?.let { consumed + it })
+    }
+
     fun parse(input: java.io.InputStream, userId: String): List<RemoteNode> {
         val parser = Xml.newPullParser().apply { setInput(input, Charsets.UTF_8.name()) }
         val results = mutableListOf<RemoteNode>()

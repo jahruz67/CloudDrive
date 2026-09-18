@@ -13,6 +13,17 @@ enum class SortField { NAME, MODIFIED, SIZE, TYPE }
 enum class SortDirection { ASCENDING, DESCENDING }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class FileViewMode { LIST, GRID }
+enum class FolderLoadState { NEVER_LOADED, EMPTY, CURRENT, STALE, FAILED }
+
+data class FolderSnapshot(
+    val accountId: String = "primary",
+    val path: String,
+    val state: FolderLoadState,
+    val loadedAt: Instant? = null,
+    val errorMessage: String? = null,
+) {
+    val hasCachedListing: Boolean get() = state != FolderLoadState.NEVER_LOADED
+}
 
 data class Account(
     val id: String = "primary",
@@ -92,12 +103,12 @@ sealed interface CloudResult<out T> {
 }
 
 sealed class CloudError(message: String, cause: Throwable? = null) : Exception(message, cause) {
-    class Authentication(message: String = "Authentication is required") : CloudError(message)
+    class Authentication(message: String = "Your Nextcloud login has expired. Sign in again to continue.") : CloudError(message)
     class Network(message: String, cause: Throwable? = null) : CloudError(message, cause)
-    class Conflict(message: String = "The file changed on the server") : CloudError(message)
-    class NotFound(message: String = "The file was not found") : CloudError(message)
-    class PermissionDenied(message: String = "The server denied this operation") : CloudError(message)
-    class QuotaExceeded(message: String = "The server has insufficient storage") : CloudError(message)
+    class Conflict(message: String = "The file changed on Nextcloud.") : CloudError(message)
+    class NotFound(message: String = "The requested file or folder was not found on Nextcloud.") : CloudError(message)
+    class PermissionDenied(message: String = "You do not have permission to perform this operation on Nextcloud.") : CloudError(message)
+    class QuotaExceeded(message: String = "Your Nextcloud storage quota is full.") : CloudError(message)
     class InvalidServer(message: String) : CloudError(message)
     class Unsupported(message: String) : CloudError(message)
 }
@@ -109,6 +120,7 @@ interface CloudRepository {
     fun observeRecent(limit: Int = 100): Flow<List<RemoteNode>>
     fun observeFavorites(): Flow<List<RemoteNode>>
     suspend fun refreshFolder(path: String): CloudResult<List<RemoteNode>>
+    suspend fun refreshCloudIndex(): CloudResult<Unit>
     suspend fun search(query: String, scope: String = "/"): CloudResult<List<RemoteNode>>
     suspend fun createFolder(parentPath: String, name: String): CloudResult<RemoteNode>
     suspend fun rename(node: RemoteNode, newName: String): CloudResult<RemoteNode>
@@ -121,6 +133,21 @@ interface CloudRepository {
     suspend fun cachedFile(node: RemoteNode): CloudResult<File>
     suspend fun quota(): CloudResult<StorageQuota>
     suspend fun logout(): CloudResult<Unit>
+}
+
+interface FolderSyncCoordinator {
+    suspend fun snapshot(path: String): FolderSnapshot
+    suspend fun cachedChildren(path: String): List<RemoteNode>
+    suspend fun refresh(path: String, force: Boolean = false, refreshOfflineFiles: Boolean = false): CloudResult<FolderSnapshot>
+    fun refreshAsync(path: String, force: Boolean = false)
+    fun notifyFolder(path: String)
+    fun notifyRoots()
+}
+
+interface MetadataIndexScheduler {
+    fun start(restartCompleted: Boolean = false)
+    fun pause()
+    fun resume()
 }
 
 interface TransferManager {
@@ -142,4 +169,6 @@ interface CacheManager {
     suspend fun clearDisposable(): Long
     suspend fun evictToLimit(limitBytes: Long): Long
     suspend fun disposableBytes(): Long
+    suspend fun thumbnail(node: RemoteNode, width: Int, height: Int): File
+    suspend fun maintain(limitBytes: Long = 1L shl 30, maxAgeDays: Int = 7): Long
 }

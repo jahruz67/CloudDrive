@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -91,7 +92,11 @@ private fun LoginScreen(loggingIn: Boolean, error: String?, onConnect: (String) 
                 modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
             ) {
                 if (loggingIn) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Text("Connect")
+                else {
+                    Icon(Icons.Default.CloudQueue, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Connect to cloud")
+                }
             }
             if (loggingIn) Text("Finish signing in in your browser. This can take up to 20 minutes.", textAlign = TextAlign.Center, modifier = Modifier.padding(top = 16.dp))
         }

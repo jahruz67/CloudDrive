@@ -7,7 +7,6 @@ import dev.clouddrive.core.data.auth.LoginCoordinator
 import dev.clouddrive.core.data.settings.SettingsRepository
 import dev.clouddrive.core.model.Account
 import dev.clouddrive.core.model.CloudRepository
-import dev.clouddrive.core.model.CloudResult
 import dev.clouddrive.core.model.LoginStart
 import dev.clouddrive.core.model.ThemeMode
 import kotlinx.coroutines.channels.Channel
@@ -48,10 +47,6 @@ class AppViewModel @Inject constructor(
                 val start: LoginStart = loginCoordinator.start(serverUrl)
                 eventChannel.send(AppEvent.OpenBrowser(start.loginUrl))
                 loginCoordinator.await(start)
-                when (val refresh = repository.refreshFolder("/")) {
-                    is CloudResult.Failure -> error.value = refresh.error.message
-                    else -> Unit
-                }
             } catch (problem: Exception) {
                 error.value = problem.message ?: "Could not connect to Nextcloud"
             } finally {
@@ -60,4 +55,3 @@ class AppViewModel @Inject constructor(
         }
     }
 }
-

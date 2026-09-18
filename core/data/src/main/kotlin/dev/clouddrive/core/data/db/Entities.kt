@@ -84,6 +84,25 @@ data class OfflinePinEntity(
     val pinnedAtEpochMillis: Long,
 )
 
+@Entity(tableName = "folder_snapshots", primaryKeys = ["accountId", "path"], indices = [Index("state")])
+data class FolderSnapshotEntity(
+    val accountId: String,
+    val path: String,
+    val state: FolderLoadState,
+    val loadedAtEpochMillis: Long?,
+    val errorMessage: String?,
+)
+
+fun FolderSnapshotEntity.toModel(now: Instant = Instant.now()): FolderSnapshot {
+    val loaded = loadedAtEpochMillis?.let(Instant::ofEpochMilli)
+    val effectiveState = if (state == FolderLoadState.CURRENT || state == FolderLoadState.EMPTY) {
+        if (loaded == null || loaded.plusSeconds(5 * 60).isBefore(now)) FolderLoadState.STALE else state
+    } else state
+    return FolderSnapshot(accountId, path, effectiveState, loaded, errorMessage)
+}
+
+fun FolderSnapshot.toEntity() = FolderSnapshotEntity(accountId, path, state, loadedAt?.toEpochMilli(), errorMessage)
+
 fun AccountEntity.toModel() = Account(id, serverUrl, loginName, userId, displayName, Instant.ofEpochMilli(createdAtEpochMillis))
 fun Account.toEntity() = AccountEntity(id, serverUrl, loginName, userId, displayName, createdAt.toEpochMilli())
 
@@ -110,4 +129,3 @@ fun Transfer.toEntity() = TransferEntity(
     totalBytes, speedBytesPerSecond, state, baseEtag, uploadId, completedChunks, errorMessage,
     createdAt.toEpochMilli(), updatedAt.toEpochMilli(),
 )
-

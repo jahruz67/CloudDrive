@@ -7,6 +7,7 @@ import androidx.room.TypeConverters
 import dev.clouddrive.core.model.CacheState
 import dev.clouddrive.core.model.TransferDirection
 import dev.clouddrive.core.model.TransferState
+import dev.clouddrive.core.model.FolderLoadState
 
 class EnumConverters {
     @TypeConverter fun cacheState(value: String) = CacheState.valueOf(value)
@@ -15,11 +16,13 @@ class EnumConverters {
     @TypeConverter fun transferDirection(value: TransferDirection) = value.name
     @TypeConverter fun transferState(value: String) = TransferState.valueOf(value)
     @TypeConverter fun transferState(value: TransferState) = value.name
+    @TypeConverter fun folderLoadState(value: String) = FolderLoadState.valueOf(value)
+    @TypeConverter fun folderLoadState(value: FolderLoadState) = value.name
 }
 
 @Database(
-    entities = [AccountEntity::class, RemoteNodeEntity::class, TransferEntity::class, CacheEntryEntity::class, OfflinePinEntity::class],
-    version = 1,
+    entities = [AccountEntity::class, RemoteNodeEntity::class, TransferEntity::class, CacheEntryEntity::class, OfflinePinEntity::class, FolderSnapshotEntity::class],
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(EnumConverters::class)
@@ -29,5 +32,5 @@ abstract class CloudDatabase : RoomDatabase() {
     abstract fun transferDao(): TransferDao
     abstract fun cacheDao(): CacheDao
     abstract fun offlinePinDao(): OfflinePinDao
+    abstract fun folderSnapshotDao(): FolderSnapshotDao
 }
-

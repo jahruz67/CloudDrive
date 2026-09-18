@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.clouddrive.core.data.db.TransferDao
 import dev.clouddrive.core.data.db.toEntity
 import dev.clouddrive.core.data.db.toModel
+import dev.clouddrive.core.data.network.RemoteGateway
 import dev.clouddrive.core.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -22,6 +23,7 @@ import javax.inject.Singleton
 class DefaultTransferManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val transferDao: TransferDao,
+    private val gateway: RemoteGateway,
 ) : TransferManager {
     override fun observeTransfers(): Flow<List<Transfer>> = transferDao.observeAll().map { rows -> rows.map { it.toModel() } }
 
@@ -64,7 +66,12 @@ class DefaultTransferManager @Inject constructor(
     }
 
     override suspend fun pause(id: String) = setState(id, TransferState.PAUSED)
-    override suspend fun cancel(id: String) = setState(id, TransferState.CANCELED)
+    override suspend fun cancel(id: String) {
+        val transfer = transferDao.get(id)
+        setState(id, TransferState.CANCELED)
+        transfer?.uploadId?.let { runCatching { gateway.abortChunks(it) } }
+        transfer?.localPath?.let(::java.io.File)?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
+    }
     override suspend fun resume(id: String) { setState(id, TransferState.QUEUED); wake() }
     override suspend fun retry(id: String) { setState(id, TransferState.QUEUED); wake() }
 

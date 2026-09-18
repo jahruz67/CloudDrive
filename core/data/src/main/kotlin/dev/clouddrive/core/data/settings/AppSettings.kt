@@ -20,6 +20,7 @@ data class AppSettings(
     val cacheAgeDays: Int = 7,
     val maxConcurrentTransfers: Int = 3,
     val wifiOnly: Boolean = false,
+    val metadataIndexPaused: Boolean = false,
 )
 
 @Singleton
@@ -34,6 +35,7 @@ class SettingsRepository @Inject constructor(
             cacheAgeDays = values[CACHE_AGE] ?: 7,
             maxConcurrentTransfers = (values[MAX_TRANSFERS] ?: 3).coerceIn(1, 4),
             wifiOnly = values[WIFI_ONLY] ?: false,
+            metadataIndexPaused = values[INDEX_PAUSED] ?: false,
         )
     }
 
@@ -42,6 +44,7 @@ class SettingsRepository @Inject constructor(
     suspend fun setCacheLimit(value: Long) = edit { it[CACHE_LIMIT] = value.coerceAtLeast(256L shl 20) }
     suspend fun setMaxTransfers(value: Int) = edit { it[MAX_TRANSFERS] = value.coerceIn(1, 4) }
     suspend fun setWifiOnly(value: Boolean) = edit { it[WIFI_ONLY] = value }
+    suspend fun setMetadataIndexPaused(value: Boolean) = edit { it[INDEX_PAUSED] = value }
 
     private suspend inline fun edit(crossinline block: (MutablePreferences) -> Unit) {
         context.dataStore.edit { block(it) }
@@ -54,6 +57,6 @@ class SettingsRepository @Inject constructor(
         val CACHE_AGE = intPreferencesKey("cache_age_days")
         val MAX_TRANSFERS = intPreferencesKey("max_transfers")
         val WIFI_ONLY = booleanPreferencesKey("wifi_only")
+        val INDEX_PAUSED = booleanPreferencesKey("metadata_index_paused")
     }
 }
-

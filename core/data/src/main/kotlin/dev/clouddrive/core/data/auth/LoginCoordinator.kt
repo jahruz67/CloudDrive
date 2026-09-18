@@ -16,6 +16,8 @@ class LoginCoordinator @Inject constructor(
     private val gateway: RemoteGateway,
     private val credentials: CredentialStore,
     private val accountDao: AccountDao,
+    private val folderSync: FolderSyncCoordinator,
+    private val indexScheduler: MetadataIndexScheduler,
 ) {
     suspend fun start(serverUrl: String): LoginStart = gateway.startLogin(ServerUrlNormalizer.normalize(serverUrl))
 
@@ -33,6 +35,9 @@ class LoginCoordinator @Inject constructor(
                         createdAt = Instant.now(),
                     )
                     accountDao.upsert(account.toEntity())
+                    folderSync.notifyRoots()
+                    folderSync.refresh("/", force = true)
+                    indexScheduler.start(restartCompleted = true)
                     return@withTimeout account
                 }
             }
@@ -40,4 +45,3 @@ class LoginCoordinator @Inject constructor(
         error("Unreachable")
     }
 }
-
