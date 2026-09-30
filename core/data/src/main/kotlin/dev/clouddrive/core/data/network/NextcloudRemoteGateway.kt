@@ -102,7 +102,7 @@ class NextcloudRemoteGateway @Inject constructor(
     override suspend fun download(path: String, destination: File, offset: Long, ifRange: String?, progress: suspend (Long, Long) -> Unit): DownloadResponse = withContext(Dispatchers.IO) {
         val builder = davRequest(path).get()
         if (offset > 0) builder.header("Range", "bytes=$offset-")
-        ifRange?.let { builder.header("If-Range", it) }
+        EtagUtils.formatHeader(ifRange)?.let { builder.header("If-Range", it) }
         client.newCall(builder.build()).execute().use { response ->
             requireSuccess(response)
             val append = offset > 0 && response.code == 206
@@ -123,7 +123,7 @@ class NextcloudRemoteGateway @Inject constructor(
                     progress(copied, total)
                 }
             }
-            DownloadResponse(response.header("ETag"), destination.length(), start + body.contentLength().coerceAtLeast(0))
+            DownloadResponse(EtagUtils.normalize(response.header("ETag")), destination.length(), start + body.contentLength().coerceAtLeast(0))
         }
     }
 
@@ -148,7 +148,7 @@ class NextcloudRemoteGateway @Inject constructor(
     override suspend fun upload(path: String, body: RequestBody, ifMatch: String?, ifNoneMatch: Boolean, progress: suspend (Long, Long) -> Unit): RemoteNode = withContext(Dispatchers.IO) {
         val progressBody = ProgressRequestBody(body, progress)
         val builder = davRequest(path).put(progressBody)
-        ifMatch?.let { builder.header("If-Match", it) }
+        EtagUtils.formatHeader(ifMatch)?.let { builder.header("If-Match", it) }
         if (ifNoneMatch) builder.header("If-None-Match", "*")
         client.newCall(builder.build()).execute().use(::requireSuccess)
         stat(path)
@@ -169,11 +169,43 @@ class NextcloudRemoteGateway @Inject constructor(
 
     override suspend fun assembleChunks(uploadId: String, destinationPath: String, totalBytes: Long, ifMatch: String?, ifNoneMatch: Boolean): RemoteNode = withContext(Dispatchers.IO) {
         val credential = requireCredential()
+        val destUrl = davUrl(destinationPath)
+
+        // WebDAV destination precondition check for safe updates
+        if (ifMatch != null) {
+            val current = try {
+                stat(destinationPath)
+            } catch (notFound: CloudError.NotFound) {
+                throw CloudError.Conflict("The file changed on Nextcloud.")
+            }
+            if (!EtagUtils.matches(current.etag, ifMatch)) {
+                throw CloudError.Conflict("The file changed on Nextcloud.")
+            }
+        }
+
         val source = uploadFolderUrl(credential, uploadId).newBuilder().addPathSegment(".file").build()
-        val builder = Request.Builder().url(source).method("MOVE", null).header("Destination", davUrl(destinationPath).toString())
-            .header("OC-Total-Length", totalBytes.toString()).authenticated(credential)
-        ifMatch?.let { builder.header("If-Match", it) }
-        if (ifNoneMatch) builder.header("If-None-Match", "*")
+        val builder = Request.Builder().url(source).method("MOVE", null)
+            .header("Destination", destUrl.toString())
+            .header("OC-Total-Length", totalBytes.toString())
+            .authenticated(credential)
+
+        // WebDAV applies If-Match and If-None-Match to the Request-URI (.file pointer),
+        // NOT to the Destination. Therefore:
+        // 1. When creating a new file (ifNoneMatch), set Overwrite: F so the server rejects if destination exists.
+        // 2. When updating an existing file, use Overwrite: T and supply the WebDAV tagged-list If header
+        //    scoped to the destination resource URL: <destUrl> ([<etag>])
+        if (ifNoneMatch) {
+            builder.header("Overwrite", "F")
+        } else {
+            builder.header("Overwrite", "T")
+            if (ifMatch != null) {
+                val quotedEtag = EtagUtils.formatHeader(ifMatch)
+                if (quotedEtag != null) {
+                    builder.header("If", "<$destUrl> ([$quotedEtag])")
+                }
+            }
+        }
+
         val request = builder.build()
         client.newCall(request).execute().use(::requireSuccess)
         stat(destinationPath)
@@ -337,7 +369,7 @@ private object DavXmlParser {
         val href = this["href"] ?: return null
         val marker = "/remote.php/dav/files/$userId"
         val encodedPath = href.substringAfter(marker, "")
-        val path = RemotePath.normalize(URLDecoder.decode(encodedPath, Charsets.UTF_8.name()))
+        val path = DavPathDecoder.decodeDavPath(encodedPath)
         val fileId = this["fileid"].orEmpty().ifBlank { "path:${path.hashCode()}" }
         val name = this["displayname"].orEmpty().ifBlank { path.substringAfterLast('/').ifBlank { "Cloud Drive" } }
         val modified = runCatching { ZonedDateTime.parse(this["getlastmodified"], DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrDefault(Instant.EPOCH)
@@ -346,7 +378,7 @@ private object DavXmlParser {
             parentPath = RemotePath.parent(path), name = name,
             mimeType = if (directory) "vnd.android.document/directory" else this["getcontenttype"].orEmpty().substringBefore(';').ifBlank { "application/octet-stream" },
             isDirectory = directory, size = (this["size"] ?: this["getcontentlength"]).orEmpty().toLongOrNull() ?: 0,
-            modifiedAt = modified, etag = this["getetag"]?.trim('"'), permissions = this["permissions"].orEmpty(),
+            modifiedAt = modified, etag = EtagUtils.normalize(this["getetag"]), permissions = this["permissions"].orEmpty(),
             isFavorite = this["favorite"] == "1", hasPreview = this["has-preview"] == "true" || this["has-preview"] == "1",
             lastRefreshedAt = Instant.now(),
         )

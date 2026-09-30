@@ -31,7 +31,7 @@ class DefaultCacheManager @Inject constructor(
     override suspend fun acquire(node: RemoteNode): File = withContext(Dispatchers.IO) {
         val pinned = pinDao.get(node.documentId) != null
         val existing = cacheDao.find(node.documentId, if (pinned) "offline" else "content")
-        if (existing != null && existing.etag == node.etag && File(existing.absolutePath).isFile) {
+        if (existing != null && EtagUtils.matches(existing.etag, node.etag) && File(existing.absolutePath).isFile) {
             cacheDao.upsert(existing.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
             return@withContext File(existing.absolutePath)
         }
@@ -42,10 +42,11 @@ class DefaultCacheManager @Inject constructor(
         if (target.exists()) target.delete()
         check(partial.renameTo(target)) { "Unable to finalize cached file" }
         existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
+        val finalEtag = EtagUtils.normalize(response.etag ?: node.etag)
         cacheDao.upsert(
             CacheEntryEntity(
                 id = "${if (pinned) "offline" else "content"}:${node.documentId}", nodeDocumentId = node.documentId,
-                absolutePath = target.absolutePath, etag = response.etag ?: node.etag, size = target.length(),
+                absolutePath = target.absolutePath, etag = finalEtag, size = target.length(),
                 lastAccessedEpochMillis = System.currentTimeMillis(), kind = if (pinned) "offline" else "content", disposable = !pinned,
             ),
         )
@@ -64,10 +65,84 @@ class DefaultCacheManager @Inject constructor(
         target
     }
 
-    override suspend fun pin(node: RemoteNode) {
-        pinDao.upsert(OfflinePinEntity(node.documentId, node.etag, Instant.now().toEpochMilli()))
-        nodeDao.updateCacheState(node.documentId, CacheState.OFFLINE)
-        acquire(node)
+    override suspend fun pin(node: RemoteNode) = withContext(Dispatchers.IO) {
+        val previousPin = pinDao.get(node.documentId)
+        val previousNode = nodeDao.get(node.documentId)
+        val previousState = previousNode?.cacheState ?: node.cacheState
+        val previousEntry = cacheDao.find(node.documentId, "offline") ?: cacheDao.find(node.documentId, "content")
+
+        // Idempotent: If already pinned and local file exists and matches ETag, nothing more to do
+        val existingOffline = cacheDao.find(node.documentId, "offline")
+        if (existingOffline != null && EtagUtils.matches(existingOffline.etag, node.etag) && File(existingOffline.absolutePath).isFile) {
+            cacheDao.upsert(existingOffline.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
+            if (previousPin == null) {
+                pinDao.upsert(OfflinePinEntity(node.documentId, node.etag, System.currentTimeMillis()))
+            }
+            if (previousState != CacheState.OFFLINE) {
+                nodeDao.updateCacheState(node.documentId, CacheState.OFFLINE)
+            }
+            return@withContext
+        }
+
+        val target = File(offlineDir, key(node))
+        val partial = File(target.absolutePath + ".partial")
+        var success = false
+
+        try {
+            // Check if already available in content cache with matching ETag
+            val contentEntry = cacheDao.find(node.documentId, "content")
+            val downloadedEtag: String?
+            if (contentEntry != null && EtagUtils.matches(contentEntry.etag, node.etag) && File(contentEntry.absolutePath).isFile) {
+                File(contentEntry.absolutePath).copyTo(target, overwrite = true)
+                downloadedEtag = contentEntry.etag
+            } else {
+                val offset = partial.takeIf(File::exists)?.length() ?: 0L
+                val response = gateway.download(node.path, partial, offset, node.etag)
+                if (target.exists()) target.delete()
+                check(partial.renameTo(target)) { "Unable to finalize cached file" }
+                downloadedEtag = response.etag ?: node.etag
+            }
+
+            val finalEtag = EtagUtils.normalize(downloadedEtag ?: node.etag)
+            val now = System.currentTimeMillis()
+
+            cacheDao.upsert(
+                CacheEntryEntity(
+                    id = "offline:${node.documentId}",
+                    nodeDocumentId = node.documentId,
+                    absolutePath = target.absolutePath,
+                    etag = finalEtag,
+                    size = target.length(),
+                    lastAccessedEpochMillis = now,
+                    kind = "offline",
+                    disposable = false,
+                ),
+            )
+            if (contentEntry != null && contentEntry.absolutePath != target.absolutePath) {
+                File(contentEntry.absolutePath).delete()
+                cacheDao.delete(contentEntry.id)
+            }
+            pinDao.upsert(OfflinePinEntity(node.documentId, finalEtag, now))
+            nodeDao.updateCacheState(node.documentId, CacheState.OFFLINE)
+            maintain()
+            success = true
+        } finally {
+            if (!success) {
+                // Restore previous pin, cache state, and cache entry on failure
+                if (previousPin != null) {
+                    pinDao.upsert(previousPin)
+                } else {
+                    pinDao.delete(node.documentId)
+                }
+                nodeDao.updateCacheState(node.documentId, previousState)
+                if (previousEntry != null) {
+                    cacheDao.upsert(previousEntry)
+                } else {
+                    cacheDao.delete("offline:${node.documentId}")
+                }
+                if (target.exists()) target.delete()
+            }
+        }
     }
 
     override suspend fun unpin(node: RemoteNode) = withContext(Dispatchers.IO) {
@@ -110,7 +185,7 @@ class DefaultCacheManager @Inject constructor(
         if (!node.hasPreview) throw dev.clouddrive.core.model.CloudError.Unsupported("A preview is not available for this file")
         val kind = "thumbnail:${width.coerceAtLeast(1)}x${height.coerceAtLeast(1)}"
         val existing = cacheDao.find(node.documentId, kind)
-        if (existing != null && existing.etag == node.etag && File(existing.absolutePath).isFile) {
+        if (existing != null && EtagUtils.matches(existing.etag, node.etag) && File(existing.absolutePath).isFile) {
             cacheDao.upsert(existing.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
             return@withContext File(existing.absolutePath)
         }
@@ -119,7 +194,7 @@ class DefaultCacheManager @Inject constructor(
         existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
         cacheDao.upsert(CacheEntryEntity(
             id = "$kind:${node.documentId}", nodeDocumentId = node.documentId, absolutePath = target.absolutePath,
-            etag = node.etag, size = target.length(), lastAccessedEpochMillis = System.currentTimeMillis(),
+            etag = EtagUtils.normalize(node.etag), size = target.length(), lastAccessedEpochMillis = System.currentTimeMillis(),
             kind = kind, disposable = true,
         ))
         maintain()
@@ -149,7 +224,8 @@ class DefaultCacheManager @Inject constructor(
     }
 
     private fun key(node: RemoteNode): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest("${node.documentId}:${node.etag}".toByteArray())
+        val normalizedEtag = EtagUtils.normalize(node.etag)
+        val digest = MessageDigest.getInstance("SHA-256").digest("${node.documentId}:$normalizedEtag".toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }
 }

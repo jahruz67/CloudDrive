@@ -136,10 +136,23 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
             placeholder = { Text("Search this cloud") },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             trailingIcon = {
-                if (state.query.isNotEmpty()) IconButton(onClick = { viewModel.setQuery("") }) { Icon(Icons.Default.Close, "Clear") }
-                else IconButton(onClick = viewModel::search) { Icon(Icons.Default.Search, "Search") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.query.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.setQuery("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear")
+                        }
+                    }
+                    IconButton(
+                        onClick = { if (state.query.isNotBlank()) viewModel.search() },
+                        enabled = state.query.isNotBlank(),
+                    ) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    }
+                }
             },
             singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { if (state.query.isNotBlank()) viewModel.search() }),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         )
         Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -205,12 +218,19 @@ private fun handleNodeAction(action: NodeAction, node: RemoteNode, viewModel: Dr
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileRow(node: RemoteNode, selected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit, onAction: (NodeAction) -> Unit) {
+private fun FileRow(
+    node: RemoteNode,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    isOfflineScreen: Boolean = false,
+    onAction: (NodeAction) -> Unit,
+) {
     ListItem(
         headlineContent = { Text(node.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = { Text(fileSubtitle(node)) },
         leadingContent = { FileVisual(node, Modifier.size(44.dp)) },
-        trailingContent = { NodeMenu(node, onAction) },
+        trailingContent = { NodeMenu(node, onAction, isOfflineScreen) },
         modifier = Modifier.fillMaxWidth().background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent).combinedClickable(onClick = onClick, onLongClick = onLongClick),
     )
 }
@@ -250,20 +270,35 @@ private fun FileVisual(node: RemoteNode, modifier: Modifier) {
 }
 
 @Composable
-private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit) {
+private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit, isOfflineScreen: Boolean = false) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { expanded = true }) { Icon(Icons.Default.MoreVert, "File actions") }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem({ Text(if (node.isFavorite) "Remove favorite" else "Favorite") }, { expanded = false; onAction(NodeAction.FAVORITE) }, leadingIcon = { Icon(Icons.Default.Star, null) })
-            if (!node.isDirectory) DropdownMenuItem({ Text(if (node.cacheState == CacheState.OFFLINE) "Remove offline copy" else "Available offline") }, { expanded = false; onAction(NodeAction.OFFLINE) }, leadingIcon = { Icon(Icons.Default.OfflinePin, null) })
-            if (!node.isDirectory) DropdownMenuItem({ Text("Share") }, { expanded = false; onAction(NodeAction.SHARE) }, leadingIcon = { Icon(Icons.Default.Share, null) })
-            if (node.canRename) DropdownMenuItem({ Text("Rename") }, { expanded = false; onAction(NodeAction.RENAME) }, leadingIcon = { Icon(Icons.Default.Edit, null) })
-            if (node.canWrite) {
-                DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
-                DropdownMenuItem({ Text("Copy") }, { expanded = false; onAction(NodeAction.COPY) }, leadingIcon = { Icon(Icons.Default.FileCopy, null) })
+            if (isOfflineScreen) {
+                if (!node.isDirectory) {
+                    DropdownMenuItem(
+                        { Text("Remove offline copy") },
+                        { expanded = false; onAction(NodeAction.OFFLINE) },
+                        leadingIcon = { Icon(Icons.Default.OfflinePin, null) },
+                    )
+                    DropdownMenuItem(
+                        { Text("Share") },
+                        { expanded = false; onAction(NodeAction.SHARE) },
+                        leadingIcon = { Icon(Icons.Default.Share, null) },
+                    )
+                }
+            } else {
+                DropdownMenuItem({ Text(if (node.isFavorite) "Remove favorite" else "Favorite") }, { expanded = false; onAction(NodeAction.FAVORITE) }, leadingIcon = { Icon(Icons.Default.Star, null) })
+                if (!node.isDirectory) DropdownMenuItem({ Text(if (node.cacheState == CacheState.OFFLINE) "Remove offline copy" else "Available offline") }, { expanded = false; onAction(NodeAction.OFFLINE) }, leadingIcon = { Icon(Icons.Default.OfflinePin, null) })
+                if (!node.isDirectory) DropdownMenuItem({ Text("Share") }, { expanded = false; onAction(NodeAction.SHARE) }, leadingIcon = { Icon(Icons.Default.Share, null) })
+                if (node.canRename) DropdownMenuItem({ Text("Rename") }, { expanded = false; onAction(NodeAction.RENAME) }, leadingIcon = { Icon(Icons.Default.Edit, null) })
+                if (node.canWrite) {
+                    DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
+                    DropdownMenuItem({ Text("Copy") }, { expanded = false; onAction(NodeAction.COPY) }, leadingIcon = { Icon(Icons.Default.FileCopy, null) })
+                }
+                if (node.canDelete) DropdownMenuItem({ Text("Delete") }, { expanded = false; onAction(NodeAction.DELETE) }, leadingIcon = { Icon(Icons.Default.Delete, null) })
             }
-            if (node.canDelete) DropdownMenuItem({ Text("Delete") }, { expanded = false; onAction(NodeAction.DELETE) }, leadingIcon = { Icon(Icons.Default.Delete, null) })
         }
     }
 }
@@ -295,6 +330,24 @@ private fun TextInputDialog(title: String, initial: String, hint: String, onDism
 @Composable
 private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hiltViewModel()) {
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is DriveEvent.Message -> Toast.makeText(context, event.text, Toast.LENGTH_SHORT).show()
+                is DriveEvent.OpenFile -> {
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
+                    context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, event.mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                }
+                is DriveEvent.ShareFile -> {
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
+                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType(event.mimeType).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share file"))
+                }
+            }
+        }
+    }
+
     Column(modifier.fillMaxSize()) {
         TopAppBar(
             title = { ScreenTitle(Icons.Default.CloudDownload, "Offline") },
@@ -303,7 +356,23 @@ private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hilt
             ),
         )
         if (nodes.isEmpty()) EmptyFiles("Files you make available offline appear here")
-        else LazyColumn { items(nodes, key = RemoteNode::documentId) { node -> FileRow(node, false, {}, {}) { if (it == NodeAction.OFFLINE) viewModel.remove(node) } } }
+        else LazyColumn {
+            items(nodes, key = RemoteNode::documentId) { node ->
+                FileRow(
+                    node = node,
+                    selected = false,
+                    onClick = { viewModel.open(node) },
+                    onLongClick = {},
+                    isOfflineScreen = true,
+                ) { action ->
+                    when (action) {
+                        NodeAction.SHARE -> viewModel.share(node)
+                        NodeAction.OFFLINE -> viewModel.remove(node)
+                        else -> Unit
+                    }
+                }
+            }
+        }
     }
 }
 

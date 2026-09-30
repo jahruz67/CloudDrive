@@ -37,9 +37,14 @@ class MetadataIndexWorker @AssistedInject constructor(
             if (pending.isEmpty()) return Result.success()
             for (folder in pending) {
                 if (isStopped || settingsRepository.settings.first().metadataIndexPaused) return Result.success()
-                when (coordinator.refresh(folder.path, force = true)) {
+                when (val result = coordinator.refresh(folder.path, force = true)) {
                     is CloudResult.Success -> Unit
-                    is CloudResult.Failure -> return Result.retry()
+                    is CloudResult.Failure -> {
+                        if (result.error is CloudError.NotFound) {
+                            continue
+                        }
+                        return Result.retry()
+                    }
                 }
             }
         }

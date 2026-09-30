@@ -30,14 +30,37 @@ class DefaultTransferManager @Inject constructor(
 
     override suspend fun enqueueUpload(contentUri: String, remotePath: String, displayName: String): String {
         val id = UUID.randomUUID().toString()
+        val resolvedName = resolveDisplayName(contentUri, displayName)
+        val finalRemotePath = if (remotePath.isBlank() || remotePath.endsWith("/")) {
+            RemotePath.child(remotePath, resolvedName)
+        } else {
+            val parent = RemotePath.parent(remotePath)
+            RemotePath.child(parent, resolvedName)
+        }
         transferDao.upsert(
             Transfer(
-                id = id, direction = TransferDirection.UPLOAD, displayName = displayName,
-                contentUri = contentUri, localPath = null, remotePath = RemotePath.normalize(remotePath),
+                id = id, direction = TransferDirection.UPLOAD, displayName = resolvedName,
+                contentUri = contentUri, localPath = null, remotePath = RemotePath.normalize(finalRemotePath),
             ).toEntity(),
         )
         wake()
         return id
+    }
+
+    private fun resolveDisplayName(uriString: String, givenName: String): String {
+        val uri = runCatching { android.net.Uri.parse(uriString) }.getOrNull() ?: return givenName.ifBlank { "upload" }
+        val cursor = runCatching {
+            context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+        }.getOrNull()
+        val resolved = cursor?.use {
+            if (it.moveToFirst()) {
+                val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) it.getString(idx) else null
+            } else null
+        }
+        val fallback = uri.lastPathSegment?.substringAfterLast('/')?.substringBefore('?')
+        val candidate = (resolved ?: givenName.ifBlank { null } ?: fallback)?.trim()?.ifBlank { null } ?: "upload"
+        return candidate.replace('/', '_').replace('\\', '_').ifBlank { "upload" }
     }
 
     override suspend fun enqueueDownload(node: RemoteNode, makeOffline: Boolean): String {

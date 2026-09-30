@@ -46,11 +46,26 @@ class DefaultFolderSyncCoordinator @Inject constructor(
             }
             try {
                 val remote = gateway.listFolder(normalized)
-                val existing = nodeDao.children("primary", normalized).associateBy { it.documentId }
+                val existingList = nodeDao.children("primary", normalized)
+                val existing = existingList.associateBy { it.documentId }
                 val now = Instant.now()
+
+                val incomingDocIds = remote.map { it.documentId }.toSet()
+                val incomingByPath = remote.associateBy { it.path }
+
+                // Identify missing children and stale database rows occupying paths of replacement files (Defect 3 & 4)
+                val missingChildren = existingList.filter { it.documentId !in incomingDocIds }
+                val stalePathOccupants = existingList.filter {
+                    val incoming = incomingByPath[it.path]
+                    incoming != null && incoming.documentId != it.documentId
+                }
+                val toCleanUp = (missingChildren + stalePathOccupants).distinctBy { it.documentId }
+
                 val merged = remote.map { node ->
                     val old = existing[node.documentId]
-                    node.copy(cacheState = old?.cacheState ?: CacheState.CLOUD_ONLY, lastRefreshedAt = now)
+                    // Preserve cacheState only when it still belongs to the same remote file
+                    val cacheState = if (old != null && old.path == node.path) old.cacheState else CacheState.CLOUD_ONLY
+                    node.copy(cacheState = cacheState, lastRefreshedAt = now)
                 }
                 val updatedSnapshot = FolderSnapshot(
                     path = normalized,
@@ -58,20 +73,29 @@ class DefaultFolderSyncCoordinator @Inject constructor(
                     loadedAt = now,
                 )
                 database.withTransaction {
+                    for (stale in toCleanUp) {
+                        cleanUpNode(stale)
+                    }
                     nodeDao.upsertAll(merged.map(RemoteNode::toEntity))
-                    nodeDao.deleteMissing("primary", normalized, merged.map(RemoteNode::documentId).ifEmpty { listOf("__none__") })
                     snapshotDao.upsert(updatedSnapshot.toEntity())
                 }
                 if (refreshOfflineFiles) {
                     merged.forEach { fresh ->
                         val old = existing[fresh.documentId]
-                        if (old?.cacheState == CacheState.OFFLINE && old.etag != fresh.etag) {
+                        if (old?.cacheState == CacheState.OFFLINE && !EtagUtils.matches(old.etag, fresh.etag)) {
                             runCatching { cacheManager.acquire(fresh.copy(cacheState = CacheState.OFFLINE)) }
                         }
                     }
                 }
                 notifyFolder(normalized)
                 CloudResult.Success(updatedSnapshot)
+            } catch (error: CloudError.NotFound) {
+                // When a directory disappears during sync, remove its complete metadata subtree and snapshots
+                database.withTransaction {
+                    cleanUpSubtree("primary", normalized)
+                }
+                notifyFolder(RemotePath.parent(normalized))
+                CloudResult.Failure(error)
             } catch (error: CloudError) {
                 val failed = before.copy(state = FolderLoadState.FAILED, errorMessage = error.message)
                 snapshotDao.upsert(failed.toEntity())
@@ -83,6 +107,33 @@ class DefaultFolderSyncCoordinator @Inject constructor(
                 notifyFolder(normalized)
                 CloudResult.Failure(cloudError)
             }
+        }
+    }
+
+    private suspend fun cleanUpSubtree(accountId: String, path: String) {
+        val exactPath = RemotePath.normalize(path)
+        val escapedPrefix = SqlUtils.subtreePrefix(exactPath)
+        val subtree = nodeDao.getSubtree(accountId, exactPath, escapedPrefix)
+        val docIds = subtree.map { it.documentId }
+        if (docIds.isNotEmpty()) {
+            val entries = database.cacheDao().findByDocumentIds(docIds)
+            entries.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
+            database.cacheDao().deleteByDocumentIds(docIds)
+            database.offlinePinDao().deleteByDocumentIds(docIds)
+        }
+        snapshotDao.deleteSnapshotsForSubtree(accountId, exactPath, escapedPrefix)
+        nodeDao.deleteSubtree(accountId, exactPath, escapedPrefix)
+    }
+
+    private suspend fun cleanUpNode(node: RemoteNodeEntity) {
+        if (node.isDirectory) {
+            cleanUpSubtree(node.accountId, node.path)
+        } else {
+            val entries = database.cacheDao().findByDocumentIds(listOf(node.documentId))
+            entries.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
+            database.cacheDao().deleteByDocumentIds(listOf(node.documentId))
+            database.offlinePinDao().deleteByDocumentIds(listOf(node.documentId))
+            nodeDao.delete(node.documentId)
         }
     }
 

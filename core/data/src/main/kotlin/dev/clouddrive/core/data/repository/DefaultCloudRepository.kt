@@ -49,31 +49,50 @@ class DefaultCloudRepository @Inject constructor(
     }
 
     override suspend fun search(query: String, scope: String): CloudResult<List<RemoteNode>> {
-        if (query.isBlank()) return CloudResult.Success(emptyList())
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return CloudResult.Success(emptyList())
         val normalizedScope = RemotePath.normalize(scope)
+        val escapedQuery = SqlUtils.escapeLike(trimmed)
+        val escapedScopePrefix = "${SqlUtils.escapeLike(normalizedScope)}/%"
         return try {
-            val remote = gateway.search(query, normalizedScope)
-            nodeDao.upsertAll(remote.map(RemoteNode::toEntity))
+            val remote = gateway.search(trimmed, normalizedScope)
+            database.withTransaction {
+                nodeDao.upsertAll(remote.map(RemoteNode::toEntity))
+            }
             CloudResult.Success(remote)
         } catch (error: CloudError.Network) {
-            CloudResult.Success(nodeDao.searchCached("primary", query, normalizedScope).map(RemoteNodeEntity::toModel))
+            CloudResult.Success(nodeDao.searchCached("primary", escapedQuery, normalizedScope, escapedScopePrefix).map(RemoteNodeEntity::toModel))
         } catch (error: CloudError) {
             CloudResult.Failure(error)
         } catch (error: Exception) {
-            CloudResult.Success(nodeDao.searchCached("primary", query, normalizedScope).map(RemoteNodeEntity::toModel))
+            CloudResult.Success(nodeDao.searchCached("primary", escapedQuery, normalizedScope, escapedScopePrefix).map(RemoteNodeEntity::toModel))
         }
     }
 
     override suspend fun createFolder(parentPath: String, name: String) = mutate(parentPath) { gateway.createFolder(RemotePath.child(parentPath, name)) }
     override suspend fun rename(node: RemoteNode, newName: String): CloudResult<RemoteNode> = capture {
         val updated = gateway.move(node.path, RemotePath.child(node.parentPath, newName))
-        database.withTransaction { nodeDao.deleteTree(node.documentId, "${node.path}/%"); nodeDao.upsert(updated.toEntity()) }
+        database.withTransaction {
+            val exactPath = RemotePath.normalize(node.path)
+            val escapedPrefix = SqlUtils.subtreePrefix(exactPath)
+            snapshotDao.deleteSnapshotsForSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.deleteSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.delete(node.documentId)
+            nodeDao.upsert(updated.toEntity())
+        }
         folderSync.notifyFolder(node.parentPath)
         updated
     }
     override suspend fun move(node: RemoteNode, newParentPath: String): CloudResult<RemoteNode> = capture {
         val updated = gateway.move(node.path, RemotePath.child(newParentPath, node.name))
-        database.withTransaction { nodeDao.deleteTree(node.documentId, "${node.path}/%"); nodeDao.upsert(updated.toEntity()) }
+        database.withTransaction {
+            val exactPath = RemotePath.normalize(node.path)
+            val escapedPrefix = SqlUtils.subtreePrefix(exactPath)
+            snapshotDao.deleteSnapshotsForSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.deleteSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.delete(node.documentId)
+            nodeDao.upsert(updated.toEntity())
+        }
         folderSync.notifyFolder(node.parentPath); folderSync.notifyFolder(newParentPath)
         updated
     }
@@ -81,7 +100,19 @@ class DefaultCloudRepository @Inject constructor(
 
     override suspend fun delete(node: RemoteNode): CloudResult<Unit> = capture {
         gateway.delete(node.path)
-        nodeDao.deleteTree(node.documentId, "${node.path}/%")
+        database.withTransaction {
+            val exactPath = RemotePath.normalize(node.path)
+            val escapedPrefix = SqlUtils.subtreePrefix(exactPath)
+            val subtree = nodeDao.getSubtree("primary", exactPath, escapedPrefix)
+            val docIds = (subtree.map { it.documentId } + node.documentId).distinct()
+            val entries = cacheDao.findByDocumentIds(docIds)
+            entries.forEach { entry -> runCatching { File(entry.absolutePath).delete() } }
+            cacheDao.deleteByDocumentIds(docIds)
+            pinDao.deleteByDocumentIds(docIds)
+            snapshotDao.deleteSnapshotsForSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.deleteSubtree("primary", exactPath, escapedPrefix)
+            nodeDao.delete(node.documentId)
+        }
         folderSync.notifyFolder(node.parentPath)
     }
 

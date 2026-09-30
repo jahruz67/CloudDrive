@@ -26,6 +26,9 @@ class CloudDocumentsProvider : DocumentsProvider() {
     private lateinit var dependencies: ProviderDependencies
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val authority by lazy { appContext().packageName + ".documents" }
+    private var quotaRefreshJob: Job? = null
+    private val quotaLock = Any()
+    @Volatile private var cachedQuota: StorageQuota? = null
 
     override fun onCreate(): Boolean {
         dependencies = EntryPointAccessors.fromApplication(appContext(), ProviderDependencies::class.java)
@@ -35,7 +38,24 @@ class CloudDocumentsProvider : DocumentsProvider() {
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: ROOT_PROJECTION)
         val account = blocking { dependencies.accountDao().get() } ?: return cursor
-        val quota = runCatching { blocking { dependencies.gateway().quota() } }.getOrNull()
+
+        synchronized(quotaLock) {
+            if (quotaRefreshJob?.isActive != true) {
+                quotaRefreshJob = scope.launch {
+                    try {
+                        val newQuota = dependencies.gateway().quota()
+                        if (newQuota != cachedQuota) {
+                            cachedQuota = newQuota
+                            dependencies.folderSync().notifyRoots()
+                        }
+                    } catch (_: Exception) {
+                        // Background refresh failure (e.g. server unreachable) should not crash or leak
+                    }
+                }
+            }
+        }
+
+        val quota = cachedQuota
         cursor.newRow().apply {
             add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
             add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_DOCUMENT_ID)
@@ -44,7 +64,14 @@ class CloudDocumentsProvider : DocumentsProvider() {
             add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_upload)
             add(DocumentsContract.Root.COLUMN_FLAGS, DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_SEARCH or DocumentsContract.Root.FLAG_SUPPORTS_RECENTS)
             add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
-            add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, quota?.totalBytes?.minus(quota.usedBytes)?.coerceAtLeast(0) ?: -1L)
+            val availableBytes = quota?.totalBytes?.let { total ->
+                (total - quota.usedBytes).coerceAtLeast(0)
+            }
+            if (availableBytes != null) {
+                add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, availableBytes)
+            } else {
+                add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, -1L)
+            }
         }
         return cursor
     }

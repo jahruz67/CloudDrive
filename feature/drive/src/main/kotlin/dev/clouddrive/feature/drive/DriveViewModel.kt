@@ -1,8 +1,12 @@
 package dev.clouddrive.feature.drive
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.clouddrive.core.data.settings.AppSettings
 import dev.clouddrive.core.data.settings.SettingsRepository
 import dev.clouddrive.core.model.*
@@ -35,6 +39,7 @@ sealed interface DriveEvent {
 
 @HiltViewModel
 class DriveViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val repository: CloudRepository,
     private val transferManager: TransferManager,
     private val settingsRepository: SettingsRepository,
@@ -87,17 +92,26 @@ class DriveViewModel @Inject constructor(
     }
 
     fun setFilter(value: FileFilter) { filter.value = value; selected.value = emptySet(); searchResults.value = null }
-    fun setQuery(value: String) { query.value = value; if (value.isBlank()) searchResults.value = null }
+    fun setQuery(value: String) {
+        if (value != query.value) {
+            query.value = value
+            searchResults.value = null
+        }
+    }
     fun setSort(field: SortField) {
         if (sortField.value == field) sortDirection.value = if (sortDirection.value == SortDirection.ASCENDING) SortDirection.DESCENDING else SortDirection.ASCENDING
         else { sortField.value = field; sortDirection.value = SortDirection.ASCENDING }
     }
 
     fun search() = action {
-        if (query.value.isBlank()) searchResults.value = null
-        else when (val result = repository.search(query.value, if (filter.value == FileFilter.ALL) path.value else "/")) {
-            is CloudResult.Success -> searchResults.value = result.value
-            is CloudResult.Failure -> fail(result.error)
+        val q = query.value.trim()
+        if (q.isBlank()) {
+            searchResults.value = null
+        } else {
+            when (val result = repository.search(q, if (filter.value == FileFilter.ALL) path.value else "/")) {
+                is CloudResult.Success -> searchResults.value = result.value
+                is CloudResult.Failure -> fail(result.error)
+            }
         }
     }
 
@@ -123,9 +137,11 @@ class DriveViewModel @Inject constructor(
     fun unpin(node: RemoteNode) = actionResult({ repository.unpinOffline(node) }, "Offline copy removed")
 
     fun upload(uris: List<String>) = action {
-        uris.forEach { uri ->
-            val displayName = uri.substringAfterLast('/').substringBefore('?').ifBlank { "upload" }
-            transferManager.enqueueUpload(uri, RemotePath.child(path.value, displayName), displayName)
+        uris.forEach { uriString ->
+            val uri = Uri.parse(uriString)
+            val displayName = resolveDisplayName(context, uri)
+            val remotePath = RemotePath.child(path.value, displayName)
+            transferManager.enqueueUpload(uriString, remotePath, displayName)
         }
         eventsChannel.send(DriveEvent.Message("${uris.size} upload${if (uris.size == 1) "" else "s"} queued"))
     }
@@ -177,7 +193,50 @@ class DriveViewModel @Inject constructor(
 @HiltViewModel
 class OfflineViewModel @Inject constructor(private val repository: CloudRepository) : ViewModel() {
     val nodes = repository.observeOfflineFiles().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    fun remove(node: RemoteNode) { viewModelScope.launch { repository.unpinOffline(node) } }
+    private val eventsChannel = Channel<DriveEvent>(Channel.BUFFERED)
+    val events = eventsChannel.receiveAsFlow()
+
+    fun open(node: RemoteNode) {
+        viewModelScope.launch {
+            when (val result = repository.cachedFile(node)) {
+                is CloudResult.Success -> eventsChannel.send(DriveEvent.OpenFile(result.value, node.mimeType))
+                is CloudResult.Failure -> eventsChannel.send(DriveEvent.Message(result.error.message ?: "Could not open file"))
+            }
+        }
+    }
+
+    fun share(node: RemoteNode) {
+        viewModelScope.launch {
+            when (val result = repository.cachedFile(node)) {
+                is CloudResult.Success -> eventsChannel.send(DriveEvent.ShareFile(result.value, node.mimeType))
+                is CloudResult.Failure -> eventsChannel.send(DriveEvent.Message(result.error.message ?: "Could not share file"))
+            }
+        }
+    }
+
+    fun remove(node: RemoteNode) {
+        viewModelScope.launch {
+            when (val result = repository.unpinOffline(node)) {
+                is CloudResult.Success -> eventsChannel.send(DriveEvent.Message("Offline copy removed"))
+                is CloudResult.Failure -> eventsChannel.send(DriveEvent.Message(result.error.message ?: "Could not remove offline copy"))
+            }
+        }
+    }
+}
+
+private fun resolveDisplayName(context: Context, uri: Uri): String {
+    val cursor = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+    }.getOrNull()
+    val nameFromResolver = cursor?.use {
+        if (it.moveToFirst()) {
+            val colIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (colIndex >= 0) it.getString(colIndex) else null
+        } else null
+    }
+    val fallback = uri.lastPathSegment?.substringAfterLast('/')?.substringBefore('?')
+    val candidate = (nameFromResolver ?: fallback)?.trim()?.ifBlank { null } ?: "upload"
+    return candidate.replace('/', '_').replace('\\', '_').ifBlank { "upload" }
 }
 
 @HiltViewModel

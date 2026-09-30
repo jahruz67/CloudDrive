@@ -28,8 +28,8 @@ interface RemoteNodeDao {
     fun observeRecent(accountId: String, limit: Int): Flow<List<RemoteNodeEntity>>
     @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId ORDER BY modifiedAtEpochMillis DESC LIMIT :limit")
     suspend fun recent(accountId: String, limit: Int): List<RemoteNodeEntity>
-    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND name LIKE '%' || :query || '%' AND (:scope = '/' OR path LIKE :scope || '/%') ORDER BY isDirectory DESC, name COLLATE NOCASE LIMIT 250")
-    suspend fun searchCached(accountId: String, query: String, scope: String): List<RemoteNodeEntity>
+    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND name LIKE '%' || :queryPattern || '%' ESCAPE '\\' AND (:scope = '/' OR path LIKE :scopePrefix ESCAPE '\\') ORDER BY isDirectory DESC, name COLLATE NOCASE LIMIT 250")
+    suspend fun searchCached(accountId: String, queryPattern: String, scope: String, scopePrefix: String): List<RemoteNodeEntity>
 
     @Query("SELECT * FROM remote_nodes WHERE documentId = :documentId") suspend fun get(documentId: String): RemoteNodeEntity?
     @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND path = :path") suspend fun getByPath(accountId: String, path: String): RemoteNodeEntity?
@@ -40,8 +40,14 @@ interface RemoteNodeDao {
     @Upsert suspend fun upsertAll(nodes: List<RemoteNodeEntity>)
     @Query("DELETE FROM remote_nodes WHERE accountId = :accountId AND parentPath = :parentPath AND documentId NOT IN (:keepIds)")
     suspend fun deleteMissing(accountId: String, parentPath: String, keepIds: List<String>)
-    @Query("DELETE FROM remote_nodes WHERE documentId = :documentId OR path LIKE :descendantPrefix")
+    @Query("DELETE FROM remote_nodes WHERE documentId = :documentId OR path LIKE :descendantPrefix ESCAPE '\\'")
     suspend fun deleteTree(documentId: String, descendantPrefix: String)
+    @Query("SELECT * FROM remote_nodes WHERE accountId = :accountId AND (path = :exactPath OR path LIKE :escapedPrefix ESCAPE '\\')")
+    suspend fun getSubtree(accountId: String, exactPath: String, escapedPrefix: String): List<RemoteNodeEntity>
+    @Query("DELETE FROM remote_nodes WHERE accountId = :accountId AND (path = :exactPath OR path LIKE :escapedPrefix ESCAPE '\\')")
+    suspend fun deleteSubtree(accountId: String, exactPath: String, escapedPrefix: String)
+    @Query("DELETE FROM remote_nodes WHERE documentId = :documentId")
+    suspend fun delete(documentId: String)
     @Query("UPDATE remote_nodes SET cacheState = :state WHERE documentId = :documentId") suspend fun updateCacheState(documentId: String, state: CacheState)
     @Query("UPDATE remote_nodes SET isFavorite = :favorite WHERE documentId = :documentId") suspend fun updateFavorite(documentId: String, favorite: Boolean)
     @Query("DELETE FROM remote_nodes") suspend fun clear()
@@ -52,6 +58,8 @@ interface FolderSnapshotDao {
     @Query("SELECT * FROM folder_snapshots WHERE accountId = :accountId AND path = :path LIMIT 1")
     suspend fun get(accountId: String, path: String): FolderSnapshotEntity?
     @Upsert suspend fun upsert(snapshot: FolderSnapshotEntity)
+    @Query("DELETE FROM folder_snapshots WHERE accountId = :accountId AND (path = :exactPath OR path LIKE :escapedPrefix ESCAPE '\\')")
+    suspend fun deleteSnapshotsForSubtree(accountId: String, exactPath: String, escapedPrefix: String)
     @Query("DELETE FROM folder_snapshots") suspend fun clear()
     @Query("UPDATE folder_snapshots SET state = 'STALE' WHERE accountId = :accountId") suspend fun markAllStale(accountId: String)
 }
@@ -74,12 +82,16 @@ interface TransferDao {
 interface CacheDao {
     @Query("SELECT * FROM cache_entries WHERE nodeDocumentId = :documentId AND kind = :kind LIMIT 1")
     suspend fun find(documentId: String, kind: String): CacheEntryEntity?
+    @Query("SELECT * FROM cache_entries WHERE nodeDocumentId IN (:documentIds)")
+    suspend fun findByDocumentIds(documentIds: List<String>): List<CacheEntryEntity>
     @Query("SELECT * FROM cache_entries WHERE disposable = 1 ORDER BY lastAccessedEpochMillis") suspend fun disposableOldestFirst(): List<CacheEntryEntity>
     @Query("SELECT COALESCE(SUM(size), 0) FROM cache_entries WHERE disposable = 1") suspend fun disposableBytes(): Long
     @Query("SELECT * FROM cache_entries WHERE disposable = 1 AND lastAccessedEpochMillis < :cutoff ORDER BY lastAccessedEpochMillis") suspend fun expired(cutoff: Long): List<CacheEntryEntity>
     @Query("SELECT * FROM cache_entries WHERE kind = 'working' ORDER BY lastAccessedEpochMillis") suspend fun workingEntries(): List<CacheEntryEntity>
     @Upsert suspend fun upsert(entry: CacheEntryEntity)
     @Query("DELETE FROM cache_entries WHERE id = :id") suspend fun delete(id: String)
+    @Query("DELETE FROM cache_entries WHERE nodeDocumentId IN (:documentIds)")
+    suspend fun deleteByDocumentIds(documentIds: List<String>)
     @Query("DELETE FROM cache_entries") suspend fun clear()
 }
 
@@ -88,5 +100,7 @@ interface OfflinePinDao {
     @Query("SELECT * FROM offline_pins WHERE nodeDocumentId = :documentId") suspend fun get(documentId: String): OfflinePinEntity?
     @Upsert suspend fun upsert(pin: OfflinePinEntity)
     @Query("DELETE FROM offline_pins WHERE nodeDocumentId = :documentId") suspend fun delete(documentId: String)
+    @Query("DELETE FROM offline_pins WHERE nodeDocumentId IN (:documentIds)")
+    suspend fun deleteByDocumentIds(documentIds: List<String>)
     @Query("DELETE FROM offline_pins") suspend fun clear()
 }
