@@ -61,7 +61,9 @@ class CloudDocumentsProvider : DocumentsProvider() {
             add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_DOCUMENT_ID)
             add(DocumentsContract.Root.COLUMN_TITLE, "CloudDrive")
             add(DocumentsContract.Root.COLUMN_SUMMARY, "${account.displayName} · ${account.serverUrl}")
-            add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_upload)
+            // Surface the branded adaptive app icon in Android's system file picker instead
+            // of the old platform upload glyph, which looks like an action rather than a location.
+            add(DocumentsContract.Root.COLUMN_ICON, appContext().applicationInfo.icon)
             add(DocumentsContract.Root.COLUMN_FLAGS, DocumentsContract.Root.FLAG_SUPPORTS_CREATE or DocumentsContract.Root.FLAG_SUPPORTS_SEARCH or DocumentsContract.Root.FLAG_SUPPORTS_RECENTS)
             add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
             val availableBytes = quota?.totalBytes?.let { total ->

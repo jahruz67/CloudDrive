@@ -82,13 +82,13 @@ class DriveViewModel @Inject constructor(
 
     fun navigate(node: RemoteNode) {
         if (node.isDirectory) {
-            path.value = node.path; filter.value = FileFilter.ALL; selected.value = emptySet(); searchResults.value = null; refresh()
+            path.value = node.path; filter.value = FileFilter.ALL; query.value = ""; selected.value = emptySet(); searchResults.value = null; refresh()
         } else open(node)
     }
 
     fun navigateUp(): Boolean {
         if (path.value == "/") return false
-        path.value = RemotePath.parent(path.value); selected.value = emptySet(); refresh(); return true
+        path.value = RemotePath.parent(path.value); query.value = ""; selected.value = emptySet(); searchResults.value = null; refresh(); return true
     }
 
     fun setFilter(value: FileFilter) { filter.value = value; selected.value = emptySet(); searchResults.value = null }

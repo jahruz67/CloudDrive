@@ -5,6 +5,7 @@ package dev.clouddrive.feature.drive
 import android.content.Intent
 import android.provider.DocumentsContract
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -18,7 +19,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
+import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -53,7 +57,7 @@ fun DriveShell(modifier: Modifier = Modifier) {
                     NavigationBarItem(
                         selected = destination == item,
                         onClick = { destination = item },
-                        icon = { Icon(destinationIcon(item), null) },
+                        icon = { Icon(destinationIcon(item, destination == item), null) },
                         label = { Text(item.label) },
                     )
                 }
@@ -73,11 +77,11 @@ fun DriveShell(modifier: Modifier = Modifier) {
     }
 }
 
-private fun destinationIcon(destination: MainDestination) = when (destination) {
-    MainDestination.FILES -> Icons.Default.Cloud
-    MainDestination.OFFLINE -> Icons.Default.OfflinePin
-    MainDestination.TRANSFERS -> Icons.Default.Sync
-    MainDestination.SETTINGS -> Icons.Default.Settings
+private fun destinationIcon(destination: MainDestination, selected: Boolean) = when (destination) {
+    MainDestination.FILES -> if (selected) Icons.Filled.Folder else Icons.Outlined.Folder
+    MainDestination.OFFLINE -> if (selected) Icons.Filled.CloudDownload else Icons.Outlined.CloudDownload
+    MainDestination.TRANSFERS -> if (selected) Icons.Filled.SwapVert else Icons.Outlined.SwapVert
+    MainDestination.SETTINGS -> if (selected) Icons.Filled.Settings else Icons.Outlined.Settings
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -89,6 +93,10 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
     val uploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
         viewModel.upload(uris.map { it.toString() })
+    }
+
+    BackHandler(enabled = state.path != "/") {
+        viewModel.navigateUp()
     }
 
     LaunchedEffect(viewModel) {
@@ -118,11 +126,15 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
                 }
             },
             navigationIcon = {
-                if (state.path != "/") IconButton(onClick = { viewModel.navigateUp() }) { Icon(Icons.Default.ArrowBack, "Up") }
+                if (state.path != "/") {
+                    IconButton(onClick = { viewModel.navigateUp() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Go to parent folder")
+                    }
+                }
             },
             actions = {
                 IconButton(onClick = { viewModel.setViewMode(if (state.settings.fileViewMode == FileViewMode.LIST) FileViewMode.GRID else FileViewMode.LIST) }) {
-                    Icon(if (state.settings.fileViewMode == FileViewMode.LIST) Icons.Default.GridView else Icons.Default.ViewList, "Change layout")
+                    Icon(if (state.settings.fileViewMode == FileViewMode.LIST) Icons.Default.GridView else Icons.AutoMirrored.Filled.ViewList, "Change layout")
                 }
                 SortMenu(state.sortField, viewModel::setSort)
             },
@@ -259,7 +271,12 @@ private fun FileVisual(node: RemoteNode, modifier: Modifier) {
         AsyncImage(model = uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier.clip(RoundedCornerShape(8.dp)))
     } else {
         Box(modifier, contentAlignment = Alignment.Center) {
-            Icon(if (node.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile, null, tint = if (node.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxSize(.65f))
+            Icon(
+                fileIcon(node),
+                contentDescription = null,
+                tint = if (node.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxSize(.65f),
+            )
             when (node.cacheState) {
                 CacheState.OFFLINE -> Icon(Icons.Default.CheckCircle, "Offline", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
                 CacheState.CACHED -> Icon(Icons.Default.Schedule, "Cached", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
@@ -267,6 +284,19 @@ private fun FileVisual(node: RemoteNode, modifier: Modifier) {
             }
         }
     }
+}
+
+private fun fileIcon(node: RemoteNode) = when {
+    node.isDirectory -> Icons.Filled.Folder
+    node.mimeType == "application/pdf" -> Icons.Filled.PictureAsPdf
+    node.mimeType.startsWith("image/") -> Icons.Filled.Image
+    node.mimeType.startsWith("video/") -> Icons.Filled.Movie
+    node.mimeType.startsWith("audio/") -> Icons.Filled.AudioFile
+    node.mimeType.startsWith("text/") -> Icons.Filled.Description
+    node.mimeType.contains("spreadsheet") || node.mimeType.contains("excel") -> Icons.Filled.TableChart
+    node.mimeType.contains("presentation") || node.mimeType.contains("powerpoint") -> Icons.Filled.Slideshow
+    node.mimeType.contains("zip") || node.mimeType.contains("compressed") || node.mimeType.contains("archive") -> Icons.Filled.Archive
+    else -> Icons.AutoMirrored.Outlined.InsertDriveFile
 }
 
 @Composable
@@ -294,7 +324,7 @@ private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit, isOffline
                 if (!node.isDirectory) DropdownMenuItem({ Text("Share") }, { expanded = false; onAction(NodeAction.SHARE) }, leadingIcon = { Icon(Icons.Default.Share, null) })
                 if (node.canRename) DropdownMenuItem({ Text("Rename") }, { expanded = false; onAction(NodeAction.RENAME) }, leadingIcon = { Icon(Icons.Default.Edit, null) })
                 if (node.canWrite) {
-                    DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
+                    DropdownMenuItem({ Text("Move") }, { expanded = false; onAction(NodeAction.MOVE) }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, null) })
                     DropdownMenuItem({ Text("Copy") }, { expanded = false; onAction(NodeAction.COPY) }, leadingIcon = { Icon(Icons.Default.FileCopy, null) })
                 }
                 if (node.canDelete) DropdownMenuItem({ Text("Delete") }, { expanded = false; onAction(NodeAction.DELETE) }, leadingIcon = { Icon(Icons.Default.Delete, null) })
@@ -309,7 +339,7 @@ private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit, isOffline
 private fun SortMenu(current: SortField, onSort: (SortField) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }) { Icon(Icons.Default.Sort, "Sort") }
+        IconButton(onClick = { expanded = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Sort") }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
             SortField.entries.forEach { field -> DropdownMenuItem({ Text(field.name.lowercase().replaceFirstChar(Char::uppercase)) }, { expanded = false; onSort(field) }, trailingIcon = { if (field == current) Icon(Icons.Default.Check, null) }) }
         }
@@ -381,7 +411,7 @@ private fun TransfersScreen(modifier: Modifier, viewModel: TransfersViewModel = 
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
         TopAppBar(
-            title = { ScreenTitle(Icons.Default.CloudSync, "Transfers") },
+            title = { ScreenTitle(Icons.Default.SwapVert, "Transfers") },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
             ),
@@ -409,7 +439,7 @@ private fun SettingsScreen(modifier: Modifier, viewModel: SettingsViewModel = hi
     val cacheBytes by viewModel.cacheBytes.collectAsStateWithLifecycle()
     Column(modifier.fillMaxSize()) {
         TopAppBar(
-            title = { ScreenTitle(Icons.Default.CloudCircle, "Settings") },
+            title = { ScreenTitle(Icons.Default.Settings, "Settings") },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
             ),
