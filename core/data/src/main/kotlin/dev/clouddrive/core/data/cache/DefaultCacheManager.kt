@@ -6,6 +6,7 @@ import dev.clouddrive.core.data.db.*
 import dev.clouddrive.core.data.network.RemoteGateway
 import dev.clouddrive.core.model.CacheManager
 import dev.clouddrive.core.model.CacheState
+import dev.clouddrive.core.model.EtagUtils
 import dev.clouddrive.core.model.RemoteNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

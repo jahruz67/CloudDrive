@@ -25,7 +25,7 @@ class DefaultCloudRepository @Inject constructor(
     private val cacheManager: CacheManager,
     private val credentials: CredentialStore,
     private val folderSync: FolderSyncCoordinator,
-    private val snapshots: FolderSnapshotDao,
+    private val snapshotDao: FolderSnapshotDao,
     private val indexScheduler: MetadataIndexScheduler,
 ) : CloudRepository {
     override fun observeAccount(): Flow<Account?> = accountDao.observe().map { it?.toModel() }
@@ -41,7 +41,7 @@ class DefaultCloudRepository @Inject constructor(
         }
 
     override suspend fun refreshCloudIndex(): CloudResult<Unit> = capture {
-        snapshots.markAllStale("primary")
+        snapshotDao.markAllStale("primary")
         indexScheduler.start(restartCompleted = true)
         folderSync.refresh("/", force = true, refreshOfflineFiles = true).let {
             if (it is CloudResult.Failure) throw it.error
@@ -130,7 +130,7 @@ class DefaultCloudRepository @Inject constructor(
         runCatching { gateway.revokeCredential() }
         cacheManager.clearDisposable()
         database.withTransaction {
-            pinDao.clear(); cacheDao.clear(); transferDao.clear(); snapshots.clear(); nodeDao.clear(); accountDao.clear()
+            pinDao.clear(); cacheDao.clear(); transferDao.clear(); snapshotDao.clear(); nodeDao.clear(); accountDao.clear()
         }
         credentials.clear()
         indexScheduler.pause()
