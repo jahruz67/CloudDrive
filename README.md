@@ -2,6 +2,8 @@
 
 CloudDrive is a native Android virtual-drive client for a single Nextcloud account. It exposes cloud files in the app and through Android's Storage Access Framework without automatically uploading anything from the device.
 
+**Website:** [jahruz67.github.io/CloudDrive](https://jahruz67.github.io/CloudDrive/)
+
 ## Requirements
 
 - Android Studio with JDK 17

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <meta name="description" content="CloudDrive brings your Nextcloud files into Android without mirroring your whole cloud to your phone.">
+  <meta property="og:title" content="CloudDrive for Nextcloud">
+  <meta property="og:description" content="Your cloud, present when you need it. A private virtual drive for Android.">
+  <meta property="og:type" content="website">
+  <title>CloudDrive — Nextcloud, native on Android</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="CloudDrive home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span>CloudDrive</span>
+    </a>
+    <nav class="nav" aria-label="Primary navigation">
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#how-it-works">How it works</a>
+    </nav>
+    <a class="button button-small button-ghost" href="https://github.com/jahruz67/CloudDrive" target="_blank" rel="noreferrer">View source <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy reveal">
+        <div class="eyebrow"><span class="status-dot"></span> Open source · Android 8+</div>
+        <h1>Your cloud.<br><em>Right where it belongs.</em></h1>
+        <p class="hero-lede">CloudDrive makes your Nextcloud files feel native on Android—browse, search, and keep the essentials offline without mirroring your entire cloud.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" id="download-button" href="https://github.com/jahruz67/CloudDrive/releases/latest">Download for Android <span aria-hidden="true">↓</span></a>
+          <a class="text-link" href="#how-it-works">See how it works <span aria-hidden="true">→</span></a>
+        </div>
+        <p class="release-note" id="release-note">Free and open source · APK from GitHub Releases</p>
+      </div>
+
+      <div class="hero-visual reveal" aria-label="CloudDrive app preview">
+        <div class="orbit orbit-one"></div>
+        <div class="orbit orbit-two"></div>
+        <div class="phone">
+          <div class="phone-speaker"></div>
+          <div class="app-screen">
+            <div class="app-topbar">
+              <div class="app-title"><span class="mini-cloud">☁</span> My Cloud</div>
+              <div class="app-icons">▦ <span>↕</span></div>
+            </div>
+            <div class="search"><span>⌕</span> Search this cloud</div>
+            <div class="filters"><span class="active">All</span><span>Folders</span><span>Files</span></div>
+            <div class="file-list">
+              <div class="file-row"><span class="file-icon folder">◆</span><span><b>Projects</b><small>Folder · Today</small></span><i>•••</i></div>
+              <div class="file-row"><span class="file-icon image">▧</span><span><b>Mountains.jpg</b><small>4.8 MB · Sep 24</small></span><i>•••</i></div>
+              <div class="file-row"><span class="file-icon doc">≡</span><span><b>Launch notes.pdf</b><small>1.2 MB · Sep 19</small></span><i>•••</i></div>
+              <div class="file-row"><span class="file-icon folder">◆</span><span><b>Shared</b><small>Folder · Sep 12</small></span><i>•••</i></div>
+            </div>
+            <div class="fab">＋ <span>New folder</span></div>
+            <div class="app-nav"><span class="selected">◆<small>Files</small></span><span>⇩<small>Offline</small></span><span>↕<small>Transfers</small></span><span>⚙<small>Settings</small></span></div>
+          </div>
+        </div>
+        <div class="float-card float-card-top"><span>✓</span><div><b>Available offline</b><small>synced just now</small></div></div>
+        <div class="float-card float-card-bottom"><span>⇩</span><div><b>Only when opened</b><small>save space by default</small></div></div>
+      </div>
+    </section>
+
+    <section class="trust-strip" aria-label="Product principles">
+      <p>Your server</p><span>✦</span><p>Your files</p><span>✦</span><p>Your control</p>
+    </section>
+
+    <section class="section features" id="features">
+      <div class="section-heading reveal">
+        <p class="kicker">LIGHT ON STORAGE. BIG ON ACCESS.</p>
+        <h2>Everything you need.<br><em>Nothing you don't.</em></h2>
+        <p>CloudDrive indexes metadata, not your entire library. Your files stay in your cloud until you ask for them.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card feature-large reveal">
+          <div class="feature-icon">◎</div>
+          <h3>A true virtual drive</h3>
+          <p>Browse your full Nextcloud library instantly while keeping local storage free for what matters.</p>
+          <div class="storage-viz" aria-hidden="true">
+            <div class="storage-bar"><span></span></div>
+            <div><span>Cloud library</span><b>248 GB</b></div>
+            <div><span>Used on phone</span><b>384 MB</b></div>
+          </div>
+        </article>
+        <article class="feature-card reveal">
+          <div class="feature-icon warm">⌁</div>
+          <h3>Works with Android</h3>
+          <p>Open CloudDrive files from Android's system file picker and the apps you already use.</p>
+        </article>
+        <article class="feature-card reveal">
+          <div class="feature-icon lavender">⌕</div>
+          <h3>Fast cloud search</h3>
+          <p>Find recent files, favorites, folders, and previews without downloading the originals.</p>
+        </article>
+        <article class="feature-card feature-wide reveal">
+          <div>
+            <div class="feature-icon green">⇩</div>
+            <h3>Offline, on your terms</h3>
+            <p>Pin individual files for the commute. CloudDrive protects them from cache cleanup and refreshes changed copies.</p>
+          </div>
+          <div class="offline-list" aria-hidden="true">
+            <div><span class="file-icon doc">≡</span><p><b>Board pack.pdf</b><small>8.1 MB</small></p><i>✓</i></div>
+            <div><span class="file-icon image">▧</span><p><b>Trail map.png</b><small>3.4 MB</small></p><i>✓</i></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section privacy" id="privacy">
+      <div class="privacy-art reveal" aria-hidden="true">
+        <div class="privacy-ring ring-a"></div><div class="privacy-ring ring-b"></div>
+        <div class="shield">⌂<span>✓</span></div>
+        <span class="spark spark-a">✦</span><span class="spark spark-b">✦</span><span class="spark spark-c">·</span>
+      </div>
+      <div class="privacy-copy reveal">
+        <p class="kicker">PRIVATE BY DESIGN</p>
+        <h2>Your files never become <em>our</em> files.</h2>
+        <p>CloudDrive connects your phone directly to your Nextcloud server. There is no CloudDrive account, relay, analytics pipeline, or third-party storage.</p>
+        <ul>
+          <li><span>✓</span><div><b>Credentials stay encrypted</b><small>Your app password is protected by Android Keystore.</small></div></li>
+          <li><span>✓</span><div><b>No broad storage permission</b><small>Access is handled through Android's secure system APIs.</small></div></li>
+          <li><span>✓</span><div><b>Open source, end to end</b><small>Inspect every request and build the app yourself.</small></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section steps" id="how-it-works">
+      <div class="section-heading centered reveal">
+        <p class="kicker">UP AND RUNNING IN MINUTES</p>
+        <h2>Three steps to your cloud.</h2>
+      </div>
+      <div class="step-grid">
+        <article class="reveal"><span class="step-number">01</span><div class="step-icon">↓</div><h3>Install the APK</h3><p>Download the latest release straight from GitHub.</p></article>
+        <article class="reveal"><span class="step-number">02</span><div class="step-icon">⌘</div><h3>Connect Nextcloud</h3><p>Enter your HTTPS server address and approve access in your browser.</p></article>
+        <article class="reveal"><span class="step-number">03</span><div class="step-icon">☁</div><h3>Browse freely</h3><p>Your cloud appears immediately while the private metadata index fills in.</p></article>
+      </div>
+    </section>
+
+    <section class="cta reveal">
+      <div>
+        <p class="kicker">READY WHEN YOU ARE</p>
+        <h2>Make room for<br><em>what matters.</em></h2>
+        <p>Bring your Nextcloud to Android without bringing every byte with it.</p>
+        <a class="button button-light" href="https://github.com/jahruz67/CloudDrive/releases/latest">Get CloudDrive <span aria-hidden="true">↓</span></a>
+      </div>
+      <div class="cta-cloud" aria-hidden="true"><span>☁</span><i>↕</i></div>
+    </section>
+  </main>
+
+  <footer>
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>CloudDrive</span></a>
+    <p>Independent, open-source software for Nextcloud.</p>
+    <div><a href="https://github.com/jahruz67/CloudDrive">GitHub</a><a href="https://github.com/jahruz67/CloudDrive/issues">Issues</a><a href="https://github.com/jahruz67/CloudDrive/releases">Releases</a></div>
+    <small>Not affiliated with or endorsed by Nextcloud GmbH.</small>
+  </footer>
+</body>
+</html>
