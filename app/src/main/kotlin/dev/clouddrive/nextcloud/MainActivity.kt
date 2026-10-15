@@ -68,8 +68,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    if (state.account == null) LoginScreen(state.loggingIn, state.error, viewModel::login)
-                    else DriveShell(Modifier.fillMaxSize())
+                    // A missing account only means signed out after the initial read completes.
+                    when {
+                        state.initializing -> Unit
+                        state.account == null -> LoginScreen(state.loggingIn, state.error, viewModel::login)
+                        else -> DriveShell(Modifier.fillMaxSize())
+                    }
                 }
             }
         }

@@ -13,6 +13,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import dev.clouddrive.core.data.db.AccountDao
+import dev.clouddrive.core.data.db.CacheDao
 import dev.clouddrive.core.data.db.RemoteNodeDao
 import dev.clouddrive.core.data.db.toEntity
 import dev.clouddrive.core.data.db.toModel
@@ -21,6 +22,8 @@ import dev.clouddrive.core.model.*
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileNotFoundException
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 class CloudDocumentsProvider : DocumentsProvider() {
     private lateinit var dependencies: ProviderDependencies
@@ -29,6 +32,10 @@ class CloudDocumentsProvider : DocumentsProvider() {
     private var quotaRefreshJob: Job? = null
     private val quotaLock = Any()
     @Volatile private var cachedQuota: StorageQuota? = null
+    private val refreshAttempts = ConcurrentHashMap<String, Long>()
+    private val closeHandler by lazy {
+        Handler(HandlerThread("CloudDocumentSaves").apply { start() }.looper)
+    }
 
     override fun onCreate(): Boolean {
         dependencies = EntryPointAccessors.fromApplication(appContext(), ProviderDependencies::class.java)
@@ -80,22 +87,38 @@ class CloudDocumentsProvider : DocumentsProvider() {
 
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
-        if (documentId == ROOT_DOCUMENT_ID) includeRoot(cursor) else includeNode(cursor, requireNode(documentId))
+        cursor.setNotificationUri(appContext().contentResolver, DocumentsContract.buildDocumentUri(authority, documentId))
+        if (documentId == ROOT_DOCUMENT_ID) includeRoot(cursor) else {
+            val node = requireNode(documentId)
+            val pending = blocking { dependencies.cacheDao().find(documentId, "working") }
+                ?.let { File(it.absolutePath) }?.takeIf(File::isFile)
+            includeNode(cursor, if (pending == null) node else node.copy(
+                size = pending.length(), modifiedAt = java.time.Instant.ofEpochMilli(pending.lastModified()),
+            ))
+        }
         return cursor
     }
 
     override fun queryChildDocuments(parentDocumentId: String, projection: Array<out String>?, sortOrder: String?): Cursor {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
+        cursor.setNotificationUri(appContext().contentResolver, DocumentsContract.buildChildDocumentsUri(authority, parentDocumentId))
         val parentPath = if (parentDocumentId == ROOT_DOCUMENT_ID) "/" else requireNode(parentDocumentId).path
-        val snapshot = blocking { dependencies.folderSync().snapshot(parentPath) }
-        if (snapshot.state == FolderLoadState.NEVER_LOADED || (snapshot.state == FolderLoadState.FAILED && snapshot.loadedAt == null)) {
-            blocking { dependencies.folderSync().refresh(parentPath, force = true) }
-        } else if (snapshot.state == FolderLoadState.STALE || snapshot.state == FolderLoadState.FAILED) {
-            dependencies.folderSync().refreshAsync(parentPath, force = true)
+        var snapshot = blocking { dependencies.folderSync().snapshot(parentPath) }
+        var loading = false
+        if (snapshot.state in setOf(FolderLoadState.NEVER_LOADED, FolderLoadState.STALE, FolderLoadState.FAILED) && claimRefresh(parentPath)) {
+            if (snapshot.loadedAt == null) {
+                blocking { dependencies.folderSync().refresh(parentPath, force = true) }
+                snapshot = blocking { dependencies.folderSync().snapshot(parentPath) }
+            } else {
+                dependencies.folderSync().refreshAsync(parentPath, force = true)
+                loading = true
+            }
         }
         blocking { dependencies.folderSync().cachedChildren(parentPath) }.forEach { includeNode(cursor, it) }
-        val loading = snapshot.state == FolderLoadState.STALE || (snapshot.state == FolderLoadState.FAILED && snapshot.loadedAt != null)
-        cursor.setExtras(Bundle().apply { putBoolean(DocumentsContract.EXTRA_LOADING, loading) })
+        cursor.setExtras(Bundle().apply {
+            putBoolean(DocumentsContract.EXTRA_LOADING, loading)
+            snapshot.errorMessage?.let { putString(DocumentsContract.EXTRA_ERROR, it) }
+        })
         return cursor
     }
 
@@ -121,16 +144,42 @@ class CloudDocumentsProvider : DocumentsProvider() {
         if (node.isDirectory) throw FileNotFoundException("Folders cannot be opened as files")
         signal?.throwIfCanceled()
         return if (mode.contains('w')) {
+            if (!node.canWrite) throw FileNotFoundException("This cloud file is read-only")
             val working = blocking { dependencies.cacheManager().workingCopy(node) }
-            ParcelFileDescriptor.open(
-                working,
-                ParcelFileDescriptor.parseMode(mode),
-                Handler(Looper.getMainLooper()),
-            ) {
-                scope.launch { dependencies.transferManager().enqueueLocalUpload(working, node.path, node.name, node.etag) }
+            val before = digest(working)
+            val baseEtag = blocking {
+                dependencies.cacheDao().find(documentId, "working")?.etag
+                    ?: dependencies.cacheDao().find(documentId, "offline")?.etag
+                    ?: dependencies.cacheDao().find(documentId, "content")?.etag ?: node.etag
+            }
+            signal?.throwIfCanceled()
+            ParcelFileDescriptor.open(working, ParcelFileDescriptor.parseMode(mode), closeHandler) { error ->
+                try {
+                    if (error == null && !before.contentEquals(digest(working))) {
+                        blocking {
+                            DocumentEditLocks.withLock(node.path) {
+                                // An earlier local save may have finished while this descriptor was open.
+                                // Rebase only against identical source bytes, preserving real remote conflicts.
+                                val latestBase = listOf("working", "offline", "content").firstNotNullOfOrNull { kind ->
+                                    dependencies.cacheDao().find(documentId, kind)?.takeIf { entry ->
+                                        val source = File(entry.absolutePath)
+                                        source.isFile && before.contentEquals(digest(source))
+                                    }?.etag
+                                } ?: baseEtag
+                                dependencies.transferManager().enqueueLocalUpload(working, node.path, node.name, latestBase)
+                            }
+                        }
+                        dependencies.folderSync().notifyFolder(node.parentPath)
+                        appContext().contentResolver.notifyChange(DocumentsContract.buildDocumentUri(authority, documentId), null)
+                    }
+                    if (error == null) working.delete()
+                } catch (failure: Exception) {
+                    android.util.Log.e("CloudDocuments", "Unable to queue document save; working file retained", failure)
+                }
             }
         } else {
             val file = blocking { dependencies.cacheManager().acquire(node) }
+            signal?.throwIfCanceled()
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
         }
     }
@@ -191,6 +240,7 @@ class CloudDocumentsProvider : DocumentsProvider() {
             add(DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.MIME_TYPE_DIR)
             add(DocumentsContract.Document.COLUMN_FLAGS, DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE)
             add(DocumentsContract.Document.COLUMN_SIZE, 0L)
+            add(DocumentsContract.Document.COLUMN_ICON, appContext().applicationInfo.icon)
         }
     }
 
@@ -217,6 +267,26 @@ class CloudDocumentsProvider : DocumentsProvider() {
         ?: throw FileNotFoundException("Unknown cloud document")
 
     private fun appContext(): Context = checkNotNull(context)
+    private fun claimRefresh(path: String): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        var claimed = false
+        refreshAttempts.compute(path) { _, previous ->
+            if (previous == null || now - previous >= 30_000) { claimed = true; now } else previous
+        }
+        return claimed
+    }
+    private fun digest(file: File): ByteArray {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest()
+    }
     private fun <T> blocking(block: suspend () -> T): T = runBlocking(Dispatchers.IO) { block() }
     private fun <T> resultValue(result: CloudResult<T>): T = when (result) {
         is CloudResult.Success -> result.value
@@ -228,6 +298,7 @@ class CloudDocumentsProvider : DocumentsProvider() {
     interface ProviderDependencies {
         fun accountDao(): AccountDao
         fun nodeDao(): RemoteNodeDao
+        fun cacheDao(): CacheDao
         fun gateway(): RemoteGateway
         fun cacheManager(): CacheManager
         fun transferManager(): TransferManager

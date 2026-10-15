@@ -13,6 +13,8 @@ import dev.clouddrive.core.model.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import javax.inject.Inject
 
@@ -32,7 +34,7 @@ data class DriveUiState(
 )
 
 sealed interface DriveEvent {
-    data class OpenFile(val file: File, val mimeType: String) : DriveEvent
+    data class OpenFile(val node: RemoteNode) : DriveEvent
     data class ShareFile(val file: File, val mimeType: String) : DriveEvent
     data class Message(val text: String) : DriveEvent
 }
@@ -54,6 +56,7 @@ class DriveViewModel @Inject constructor(
     private val error = MutableStateFlow<String?>(null)
     private val searchResults = MutableStateFlow<List<RemoteNode>?>(null)
     private val eventsChannel = Channel<DriveEvent>(Channel.BUFFERED)
+    private var refreshJob: Job? = null
     val events = eventsChannel.receiveAsFlow()
 
     private val visibleNodes = combine(path, filter) { currentPath, currentFilter -> currentPath to currentFilter }
@@ -77,8 +80,6 @@ class DriveViewModel @Inject constructor(
             loading = body.loading, error = body.error, settings = settings,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DriveUiState())
-
-    init { refresh() }
 
     fun navigate(node: RemoteNode) {
         if (node.isDirectory) {
@@ -115,13 +116,23 @@ class DriveViewModel @Inject constructor(
         }
     }
 
-    fun refresh() = action {
-        loading.value = true
-        when (val result = repository.refreshFolder(path.value)) {
-            is CloudResult.Failure -> fail(result.error)
-            else -> error.value = null
+    fun refresh() = refreshFolder(silent = false)
+    fun refreshQuietly() = refreshFolder(silent = true)
+
+    private fun refreshFolder(silent: Boolean) {
+        refreshJob?.cancel()
+        val requestedPath = path.value
+        refreshJob = viewModelScope.launch {
+            if (!silent || state.value.nodes.isEmpty()) loading.value = true
+            try {
+                when (val result = repository.refreshFolder(requestedPath)) {
+                    is CloudResult.Failure -> if (silent) error.value = result.error.message else fail(result.error)
+                    else -> error.value = null
+                }
+            } finally {
+                loading.value = false
+            }
         }
-        loading.value = false
     }
 
     fun toggleSelection(node: RemoteNode) { selected.value = selected.value.toMutableSet().apply { if (!add(node.documentId)) remove(node.documentId) } }
@@ -148,7 +159,7 @@ class DriveViewModel @Inject constructor(
 
     fun open(node: RemoteNode) = action {
         when (val result = repository.cachedFile(node)) {
-            is CloudResult.Success -> eventsChannel.send(DriveEvent.OpenFile(result.value, node.mimeType))
+            is CloudResult.Success -> eventsChannel.send(DriveEvent.OpenFile(node))
             is CloudResult.Failure -> fail(result.error)
         }
     }
@@ -174,7 +185,13 @@ class DriveViewModel @Inject constructor(
         eventsChannel.send(DriveEvent.Message(error.value!!))
     }
 
-    private fun action(block: suspend () -> Unit) { viewModelScope.launch { runCatching { block() }.onFailure { fail(it) } } }
+    private fun action(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { block() }
+            catch (canceled: CancellationException) { throw canceled }
+            catch (problem: Exception) { fail(problem) }
+        }
+    }
 
     private fun sort(nodes: List<RemoteNode>, field: SortField, direction: SortDirection): List<RemoteNode> {
         val comparator = when (field) {
@@ -199,7 +216,7 @@ class OfflineViewModel @Inject constructor(private val repository: CloudReposito
     fun open(node: RemoteNode) {
         viewModelScope.launch {
             when (val result = repository.cachedFile(node)) {
-                is CloudResult.Success -> eventsChannel.send(DriveEvent.OpenFile(result.value, node.mimeType))
+                is CloudResult.Success -> eventsChannel.send(DriveEvent.OpenFile(node))
                 is CloudResult.Failure -> eventsChannel.send(DriveEvent.Message(result.error.message ?: "Could not open file"))
             }
         }

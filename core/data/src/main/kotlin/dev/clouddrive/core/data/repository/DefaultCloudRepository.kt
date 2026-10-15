@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -60,6 +61,8 @@ class DefaultCloudRepository @Inject constructor(
                 nodeDao.upsertAll(remote.map(RemoteNode::toEntity))
             }
             CloudResult.Success(remote)
+        } catch (canceled: CancellationException) {
+            throw canceled
         } catch (error: CloudError.Network) {
             CloudResult.Success(nodeDao.searchCached("primary", escapedQuery, normalizedScope, escapedScopePrefix).map(RemoteNodeEntity::toModel))
         } catch (error: CloudError) {
@@ -106,7 +109,7 @@ class DefaultCloudRepository @Inject constructor(
             val subtree = nodeDao.getSubtree("primary", exactPath, escapedPrefix)
             val docIds = (subtree.map { it.documentId } + node.documentId).distinct()
             val entries = cacheDao.findByDocumentIds(docIds)
-            entries.forEach { entry -> runCatching { File(entry.absolutePath).delete() } }
+            entries.filter { it.kind != "working" }.forEach { entry -> runCatching { File(entry.absolutePath).delete() } }
             cacheDao.deleteByDocumentIds(docIds)
             pinDao.deleteByDocumentIds(docIds)
             snapshotDao.deleteSnapshotsForSubtree("primary", exactPath, escapedPrefix)
@@ -143,6 +146,7 @@ class DefaultCloudRepository @Inject constructor(
 
     private suspend fun <T> capture(block: suspend () -> T): CloudResult<T> = withContext(Dispatchers.IO) {
         try { CloudResult.Success(block()) }
+        catch (canceled: CancellationException) { throw canceled }
         catch (error: CloudError) { CloudResult.Failure(error) }
         catch (error: Exception) { CloudResult.Failure(CloudError.Network(error.message ?: "Unexpected network error", error)) }
     }

@@ -96,6 +96,8 @@ class DefaultFolderSyncCoordinator @Inject constructor(
                 }
                 notifyFolder(RemotePath.parent(normalized))
                 CloudResult.Failure(error)
+            } catch (canceled: CancellationException) {
+                throw canceled
             } catch (error: CloudError) {
                 val failed = before.copy(state = FolderLoadState.FAILED, errorMessage = error.message)
                 snapshotDao.upsert(failed.toEntity())
@@ -117,7 +119,7 @@ class DefaultFolderSyncCoordinator @Inject constructor(
         val docIds = subtree.map { it.documentId }
         if (docIds.isNotEmpty()) {
             val entries = database.cacheDao().findByDocumentIds(docIds)
-            entries.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
+            entries.filter { it.kind != "working" }.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
             database.cacheDao().deleteByDocumentIds(docIds)
             database.offlinePinDao().deleteByDocumentIds(docIds)
         }
@@ -130,7 +132,7 @@ class DefaultFolderSyncCoordinator @Inject constructor(
             cleanUpSubtree(node.accountId, node.path)
         } else {
             val entries = database.cacheDao().findByDocumentIds(listOf(node.documentId))
-            entries.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
+            entries.filter { it.kind != "working" }.forEach { entry -> runCatching { java.io.File(entry.absolutePath).delete() } }
             database.cacheDao().deleteByDocumentIds(listOf(node.documentId))
             database.offlinePinDao().deleteByDocumentIds(listOf(node.documentId))
             nodeDao.delete(node.documentId)

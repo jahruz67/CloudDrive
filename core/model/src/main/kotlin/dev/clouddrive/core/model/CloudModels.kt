@@ -164,6 +164,7 @@ interface TransferManager {
 interface CacheManager {
     suspend fun acquire(node: RemoteNode): File
     suspend fun workingCopy(node: RemoteNode): File
+    suspend fun storeUploaded(node: RemoteNode, source: File)
     suspend fun pin(node: RemoteNode)
     suspend fun unpin(node: RemoteNode)
     suspend fun clearDisposable(): Long

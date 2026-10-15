@@ -27,13 +27,16 @@ class CacheMaintenanceWorker @AssistedInject constructor(
         val settings = settingsRepository.settings.first()
         cacheManager.maintain(settings.cacheLimitBytes, settings.cacheAgeDays)
         val cutoff = System.currentTimeMillis() - settings.cacheAgeDays * 24L * 60 * 60 * 1_000
-        transferDao.byStates(listOf(TransferState.CANCELED, TransferState.FAILED)).filter {
-            it.state == TransferState.CANCELED || it.updatedAtEpochMillis < cutoff
-        }.forEach { transfer ->
+        transferDao.byStates(listOf(TransferState.CANCELED)).forEach { transfer ->
             transfer.uploadId?.let { try { gateway.abortChunks(it) } catch (_: Exception) { } }
             transfer.localPath?.let(::File)?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
         }
-        File(applicationContext.filesDir, "transfer-staging").listFiles()?.filter { it.lastModified() < cutoff }?.forEach(File::delete)
+        val protectedPaths = transferDao.byStates(listOf(
+            TransferState.QUEUED, TransferState.RUNNING, TransferState.PAUSED, TransferState.FAILED,
+        )).mapNotNull { it.localPath }.toSet()
+        File(applicationContext.filesDir, "transfer-staging").listFiles()?.filter {
+            it.lastModified() < cutoff && it.absolutePath !in protectedPaths
+        }?.forEach(File::delete)
         Result.success()
     }.getOrElse { Result.retry() }
 }

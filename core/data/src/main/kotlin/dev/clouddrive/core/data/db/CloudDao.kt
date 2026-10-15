@@ -68,12 +68,20 @@ interface FolderSnapshotDao {
 interface TransferDao {
     @Query("SELECT * FROM transfers ORDER BY createdAtEpochMillis DESC") fun observeAll(): Flow<List<TransferEntity>>
     @Query("SELECT * FROM transfers WHERE id = :id") suspend fun get(id: String): TransferEntity?
-    @Query("SELECT * FROM transfers WHERE state IN (:states) ORDER BY createdAtEpochMillis") suspend fun byStates(states: List<TransferState>): List<TransferEntity>
+    @Query("SELECT * FROM transfers WHERE state IN (:states) ORDER BY createdAtEpochMillis, rowid") suspend fun byStates(states: List<TransferState>): List<TransferEntity>
     @Upsert suspend fun upsert(transfer: TransferEntity)
     @Query("UPDATE transfers SET state = :state, updatedAtEpochMillis = :now, errorMessage = :error WHERE id = :id")
     suspend fun updateState(id: String, state: TransferState, now: Long, error: String? = null)
     @Query("UPDATE transfers SET bytesTransferred = :bytes, totalBytes = :total, speedBytesPerSecond = :speed, updatedAtEpochMillis = :now WHERE id = :id")
     suspend fun updateProgress(id: String, bytes: Long, total: Long, speed: Long, now: Long)
+    @Query("UPDATE transfers SET baseEtag = :newEtag WHERE direction = 'UPLOAD' AND remotePath = :path AND id != :completedId AND state IN ('QUEUED', 'PAUSED', 'FAILED') AND baseEtag = :oldEtag")
+    suspend fun rebasePendingUploads(path: String, completedId: String, oldEtag: String?, newEtag: String?)
+    @Query("UPDATE transfers SET localPath = :path, totalBytes = :size WHERE id = :id AND state = 'RUNNING'")
+    suspend fun updateStaging(id: String, path: String, size: Long)
+    @Query("UPDATE transfers SET uploadId = :uploadId, completedChunks = :chunks WHERE id = :id AND state = 'RUNNING'")
+    suspend fun updateChunks(id: String, uploadId: String, chunks: Int)
+    @Query("UPDATE transfers SET remotePath = :path, displayName = :name WHERE id = :id")
+    suspend fun updateDestination(id: String, path: String, name: String)
     @Query("UPDATE transfers SET state = 'QUEUED', updatedAtEpochMillis = :now WHERE state = 'RUNNING'") suspend fun requeueInterrupted(now: Long)
     @Query("DELETE FROM transfers") suspend fun clear()
 }
@@ -90,6 +98,10 @@ interface CacheDao {
     @Query("SELECT * FROM cache_entries WHERE kind = 'working' ORDER BY lastAccessedEpochMillis") suspend fun workingEntries(): List<CacheEntryEntity>
     @Upsert suspend fun upsert(entry: CacheEntryEntity)
     @Query("DELETE FROM cache_entries WHERE id = :id") suspend fun delete(id: String)
+    @Query("DELETE FROM cache_entries WHERE nodeDocumentId = :documentId AND kind = 'working' AND absolutePath = :path")
+    suspend fun deleteWorkingFile(documentId: String, path: String)
+    @Query("UPDATE cache_entries SET etag = :newEtag WHERE nodeDocumentId = :documentId AND kind = 'working' AND etag = :oldEtag")
+    suspend fun rebaseWorkingFile(documentId: String, oldEtag: String?, newEtag: String?)
     @Query("DELETE FROM cache_entries WHERE nodeDocumentId IN (:documentIds)")
     suspend fun deleteByDocumentIds(documentIds: List<String>)
     @Query("DELETE FROM cache_entries") suspend fun clear()

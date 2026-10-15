@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.*
 import dagger.hilt.android.HiltAndroidApp
 import dev.clouddrive.core.transfers.CacheMaintenanceWorker
+import dev.clouddrive.core.transfers.TransferRecoveryWorker
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -17,6 +18,7 @@ class CloudDriveApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        TransferRecoveryWorker.schedule(this)
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "cache-maintenance",
             ExistingPeriodicWorkPolicy.KEEP,

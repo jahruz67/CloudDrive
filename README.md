@@ -70,6 +70,12 @@ File bytes are downloaded only when a file is opened or explicitly made availabl
 
 Temporary file and thumbnail cache entries have a default 1 GB limit and seven-day expiry. Offline files are excluded from eviction. A manual folder refresh compares ETags and replaces changed offline files. Transfer rows, staged uploads, completed chunk counts, and conflict names survive process restarts; boot/package replacement wakes the queue. Failed work uses exponential retry delays, and abandoned chunks and temporary files are cleaned by maintenance.
 
+Opening a file from Files or Offline grants the receiving app access to the durable cloud document URI, including write access when the server allows it. Editors that support Android document-provider saving can save changes back to the same file. Share still sends a read-only copy. The file list refreshes on return to the app and every minute while visible.
+
+Each completed save stages an immutable upload and remains readable locally while waiting for connectivity. Uploads to the same path run in save order, with ETags advanced after successful local saves to avoid spurious conflict copies. Actual server conflicts still produce a separate conflict file. WorkManager recovers queued work when foreground services cannot start; network failures retry automatically, while authentication, quota, and permission errors require attention in Transfers. Paused or failed saves block newer uploads to the same path until resumed, retried, or canceled. Pending, paused, and failed uploads are excluded from cache expiry.
+
+To validate editor integration on a device, open a DOCX in Word and an XLSX in Excel, edit and save, then confirm the original server file changes without a new copy. Repeat with two quick saves, airplane mode followed by reconnection, Wi-Fi-only enabled, an app restart, and a concurrent server edit. Open the same documents through Android Files as well. This requires the target Office apps and a test Nextcloud account; JVM tests do not verify Office behavior.
+
 ## Server/API configuration
 
 The server must expose standard Nextcloud WebDAV under `remote.php/dav`, Login Flow v2, the OCS app-password endpoint, and the core preview endpoint. The app requests only Internet/network-state, transfer foreground-service, notification, and boot-recovery permissions. Android Files access is provided by a protected `DocumentsProvider`; broad storage permissions are not requested.

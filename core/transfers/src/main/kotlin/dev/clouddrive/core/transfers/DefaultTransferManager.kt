@@ -8,12 +8,17 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.clouddrive.core.data.db.TransferDao
+import dev.clouddrive.core.data.db.CloudDatabase
+import dev.clouddrive.core.data.db.CacheEntryEntity
+import androidx.room.withTransaction
 import dev.clouddrive.core.data.db.toEntity
 import dev.clouddrive.core.data.db.toModel
 import dev.clouddrive.core.data.network.RemoteGateway
 import dev.clouddrive.core.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -25,6 +30,7 @@ class DefaultTransferManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val transferDao: TransferDao,
     private val gateway: RemoteGateway,
+    private val database: CloudDatabase,
 ) : TransferManager {
     override fun observeTransfers(): Flow<List<Transfer>> = transferDao.observeAll().map { rows -> rows.map { it.toModel() } }
 
@@ -76,17 +82,25 @@ class DefaultTransferManager @Inject constructor(
         return id
     }
 
-    override suspend fun enqueueLocalUpload(file: File, remotePath: String, displayName: String, baseEtag: String?): String {
+    override suspend fun enqueueLocalUpload(file: File, remotePath: String, displayName: String, baseEtag: String?): String = withContext(Dispatchers.IO) {
         val id = UUID.randomUUID().toString()
-        transferDao.upsert(
-            Transfer(
+        // Upload immutable bytes: an editor may reopen or truncate its descriptor immediately.
+        val staged = File(File(context.filesDir, "transfer-staging").apply { mkdirs() }, id)
+        file.copyTo(staged)
+        val node = database.remoteNodeDao().getByPath("primary", RemotePath.normalize(remotePath))
+        database.withTransaction {
+            transferDao.upsert(Transfer(
                 id = id, direction = TransferDirection.UPLOAD, displayName = displayName,
-                contentUri = null, localPath = file.absolutePath, remotePath = RemotePath.normalize(remotePath),
-                totalBytes = file.length(), baseEtag = baseEtag,
-            ).toEntity(),
-        )
+                contentUri = node?.let { "edit:${it.documentId}" }, localPath = staged.absolutePath, remotePath = RemotePath.normalize(remotePath),
+                totalBytes = staged.length(), baseEtag = baseEtag,
+            ).toEntity())
+            if (node != null) database.cacheDao().upsert(CacheEntryEntity(
+                "working:${node.documentId}", node.documentId, staged.absolutePath, baseEtag,
+                staged.length(), System.currentTimeMillis(), "working", false,
+            ))
+        }
         wake()
-        return id
+        id
     }
 
     override suspend fun pause(id: String) = setState(id, TransferState.PAUSED)
@@ -94,7 +108,13 @@ class DefaultTransferManager @Inject constructor(
         val transfer = transferDao.get(id)
         setState(id, TransferState.CANCELED)
         transfer?.uploadId?.let { try { gateway.abortChunks(it) } catch (_: Exception) { } }
-        transfer?.localPath?.let { File(it) }?.takeIf { it.parentFile?.name == "transfer-staging" }?.delete()
+        transfer?.localPath?.let { path ->
+            transfer.contentUri?.takeIf { it.startsWith("edit:") }?.removePrefix("edit:")?.let {
+                database.cacheDao().deleteWorkingFile(it, path)
+            }
+            // A running request may still be reading this file; maintenance removes canceled data.
+        }
+        wake()
     }
     override suspend fun resume(id: String) { setState(id, TransferState.QUEUED); wake() }
     override suspend fun retry(id: String) { setState(id, TransferState.QUEUED); wake() }
@@ -104,7 +124,13 @@ class DefaultTransferManager @Inject constructor(
     }
 
     private fun wake() {
-        context.startForegroundService(Intent(context, TransferService::class.java))
+        TransferRecoveryWorker.schedule(context)
+        try {
+            context.startForegroundService(Intent(context, TransferService::class.java))
+        } catch (_: IllegalStateException) {
+            // Android can prohibit service starts when an external editor saves in the background.
+            // The persisted WorkManager request will drain the same queue when allowed.
+        }
     }
 }
 

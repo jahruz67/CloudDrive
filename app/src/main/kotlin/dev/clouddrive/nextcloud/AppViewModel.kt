@@ -19,6 +19,7 @@ data class AppUiState(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val loggingIn: Boolean = false,
     val error: String? = null,
+    val initializing: Boolean = true,
 )
 
 sealed interface AppEvent { data class OpenBrowser(val url: String) : AppEvent }
@@ -35,7 +36,7 @@ class AppViewModel @Inject constructor(
     val events = eventChannel.receiveAsFlow()
 
     val state = combine(repository.observeAccount(), settingsRepository.settings, loggingIn, error) { account, settings, inProgress, problem ->
-        AppUiState(account, settings.themeMode, inProgress, problem)
+        AppUiState(account, settings.themeMode, inProgress, problem, initializing = false)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppUiState())
 
     fun login(serverUrl: String) {

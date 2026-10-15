@@ -10,6 +10,7 @@ import android.net.Uri
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.clouddrive.core.data.db.RemoteNodeDao
+import dev.clouddrive.core.data.db.CacheDao
 import dev.clouddrive.core.data.db.TransferDao
 import dev.clouddrive.core.data.db.toEntity
 import dev.clouddrive.core.data.db.toModel
@@ -37,6 +38,8 @@ class TransferQueueDrainer @Inject constructor(
     private val repository: CloudRepository,
     private val settingsRepository: SettingsRepository,
     private val folderSync: FolderSyncCoordinator,
+    private val cacheManager: CacheManager,
+    private val cacheDao: CacheDao,
 ) {
     private val drainMutex = Mutex()
     private val progressSamples = ConcurrentHashMap<String, Pair<Long, Long>>()
@@ -45,7 +48,7 @@ class TransferQueueDrainer @Inject constructor(
         createChannel()
     }
 
-    suspend fun drain(isRecovery: Boolean = false): Boolean {
+    suspend fun drain(): Boolean {
         if (!drainMutex.tryLock()) {
             return false
         }
@@ -53,21 +56,16 @@ class TransferQueueDrainer @Inject constructor(
             transferDao.requeueInterrupted(now())
             while (true) {
                 val settings = settingsRepository.settings.first()
-                if (settings.wifiOnly && !isUnmetered()) {
-                    updateNotification("Waiting for Wi-Fi", 0, 0)
-                    delay(5_000)
-                    val queued = transferDao.byStates(listOf(TransferState.QUEUED))
-                    if (queued.isEmpty()) break
-                    if (isRecovery) {
-                        delay(10_000)
-                    }
-                    continue
+                val pending = transferDao.byStates(listOf(TransferState.QUEUED, TransferState.PAUSED, TransferState.FAILED))
+                if (pending.none { it.state == TransferState.QUEUED }) break
+                if (!isConnected() || (settings.wifiOnly && !isUnmetered())) {
+                    updateNotification(if (settings.wifiOnly) "Waiting for Wi-Fi" else "Waiting for connection", 0, 0)
+                    return false
                 }
-                val queued = transferDao.byStates(listOf(TransferState.QUEUED)).take(settings.maxConcurrentTransfers)
+                val queued = UploadScheduling.ready(pending.map { it.toModel() }).take(settings.maxConcurrentTransfers)
                 if (queued.isEmpty()) break
-                coroutineScope {
-                    queued.map { async { runTransfer(it.toModel()) } }.awaitAll()
-                }
+                val results = coroutineScope { queued.map { async { runTransfer(it) } }.awaitAll() }
+                if (results.any { !it }) return false
             }
             return true
         } finally {
@@ -75,21 +73,25 @@ class TransferQueueDrainer @Inject constructor(
         }
     }
 
-    private suspend fun runTransfer(transfer: Transfer) {
+    private suspend fun runTransfer(transfer: Transfer): Boolean {
+        if (transferDao.get(transfer.id)?.state != TransferState.QUEUED) return true
         transferDao.updateState(transfer.id, TransferState.RUNNING, now())
         updateNotification(transfer.displayName, transfer.bytesTransferred, transfer.totalBytes)
         try {
             var attempt = 0
             while (true) {
                 try {
-                    when (transfer.direction) {
-                        TransferDirection.UPLOAD -> upload(transfer)
-                        TransferDirection.DOWNLOAD -> download(transfer)
+                    ensureRunning(transfer.id)
+                    val current = transferDao.get(transfer.id)?.toModel() ?: throw TransferControlException()
+                    when (current.direction) {
+                        TransferDirection.UPLOAD -> upload(current)
+                        TransferDirection.DOWNLOAD -> download(current)
                     }
                     break
                 } catch (error: Exception) {
                     if (error is TransferControlException || error is CancellationException || error is CloudError.Authentication ||
-                        error is CloudError.PermissionDenied || error is CloudError.QuotaExceeded || error is CloudError.Conflict || attempt >= 3
+                        error is CloudError.PermissionDenied || error is CloudError.QuotaExceeded || error is CloudError.Conflict ||
+                        error is CloudError.NotFound || attempt >= 3
                     ) throw error
                     delay((1L shl attempt) * 2_000L)
                     attempt++
@@ -102,8 +104,14 @@ class TransferQueueDrainer @Inject constructor(
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            transferDao.updateState(transfer.id, TransferState.FAILED, now(), friendlyError(error))
+            if (transferDao.get(transfer.id)?.state != TransferState.RUNNING) return true
+            val retryable = error is CloudError.Network || error is java.io.IOException
+            transferDao.updateState(transfer.id, if (retryable) TransferState.QUEUED else TransferState.FAILED, now(), friendlyError(error))
+            return !retryable
+        } finally {
+            progressSamples.remove(transfer.id)
         }
+        return true
     }
 
     private suspend fun download(transfer: Transfer) {
@@ -118,11 +126,11 @@ class TransferQueueDrainer @Inject constructor(
 
     private suspend fun upload(transfer: Transfer) {
         val staged = transfer.localPath?.let(::File)?.takeIf(File::exists) ?: stageUri(transfer)
-        val updated = transfer.copy(localPath = staged.absolutePath, totalBytes = staged.length(), state = TransferState.RUNNING, updatedAt = Instant.now())
-        transferDao.upsert(updated.toEntity())
+        ensureRunning(transfer.id)
+        transferDao.updateStaging(transfer.id, staged.absolutePath, staged.length())
 
         val uploaded = if (staged.length() < CHUNK_SIZE) {
-            val mediaType = transfer.contentUri?.let(Uri::parse)?.let(context.contentResolver::getType)?.toMediaTypeOrNull()
+            val mediaType = transfer.contentUri?.takeUnless { it.startsWith("edit:") }?.let(Uri::parse)?.let(context.contentResolver::getType)?.toMediaTypeOrNull()
             val body = staged.asRequestBody(mediaType)
             try {
                 gateway.upload(transfer.remotePath, body, ifMatch = transfer.baseEtag, ifNoneMatch = transfer.baseEtag == null) { sent, total ->
@@ -156,7 +164,7 @@ class TransferQueueDrainer @Inject constructor(
                 gateway.uploadChunk(uploadId, transfer.remotePath, chunk + 1, staged.length(), FileSliceRequestBody(staged, offset, length))
                 chunk++
                 val bytesSoFar = minOf(chunk * CHUNK_SIZE, staged.length())
-                transferDao.upsert(updated.copy(uploadId = uploadId, completedChunks = chunk, bytesTransferred = bytesSoFar).toEntity())
+                transferDao.updateChunks(transfer.id, uploadId, chunk)
                 progress(transfer.id, bytesSoFar, staged.length())
             }
             try {
@@ -178,9 +186,22 @@ class TransferQueueDrainer @Inject constructor(
                 result ?: throw CloudError.Conflict("Could not resolve chunked upload conflict after $maxAttempts attempts")
             }
         }
-        nodeDao.upsert(uploaded.toEntity())
+        DocumentEditLocks.withLock(transfer.remotePath) {
+            nodeDao.upsert(uploaded.toEntity())
+            cacheManager.storeUploaded(uploaded, staged)
+            if (uploaded.path == transfer.remotePath) {
+                transferDao.rebasePendingUploads(transfer.remotePath, transfer.id, transfer.baseEtag, uploaded.etag)
+                cacheDao.rebaseWorkingFile(uploaded.documentId, transfer.baseEtag, uploaded.etag)
+            } else {
+                transferDao.updateDestination(transfer.id, uploaded.path, uploaded.name)
+            }
+            transfer.contentUri?.takeIf { it.startsWith("edit:") }?.removePrefix("edit:")?.let {
+                cacheDao.deleteWorkingFile(it, staged.absolutePath)
+            }
+        }
         folderSync.notifyFolder(uploaded.parentPath)
-        staged.delete()
+        // Keep completed edit snapshots until maintenance; an already-open reader can still use them.
+        if (transfer.contentUri?.startsWith("edit:") != true) staged.delete()
     }
 
     private suspend fun stageUri(transfer: Transfer): File = withContext(Dispatchers.IO) {
@@ -225,6 +246,12 @@ class TransferQueueDrainer @Inject constructor(
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = manager.activeNetwork ?: return false
         return manager.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+    }
+
+    private fun isConnected(): Boolean {
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = manager.activeNetwork ?: return false
+        return manager.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     }
 
     private fun createChannel() {

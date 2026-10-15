@@ -3,6 +3,9 @@
 package dev.clouddrive.feature.drive
 
 import android.content.Intent
+import android.content.ClipData
+import android.content.Context
+import android.content.ActivityNotFoundException
 import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -38,11 +41,15 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil3.compose.AsyncImage
 import dev.clouddrive.core.model.*
 import java.text.DateFormat
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 enum class MainDestination(val label: String) { FILES("Files"), OFFLINE("Offline"), TRANSFERS("Transfers"), SETTINGS("Settings") }
 
@@ -89,6 +96,17 @@ private fun destinationIcon(destination: MainDestination, selected: Boolean) = w
 private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val refreshScope = rememberCoroutineScope()
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshQuietly()
+        val refresh = refreshScope.launch {
+            while (isActive) {
+                delay(60_000)
+                viewModel.refreshQuietly()
+            }
+        }
+        onPauseOrDispose { refresh.cancel() }
+    }
     var dialog by remember { mutableStateOf<FileDialog?>(null) }
     val uploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
@@ -104,8 +122,7 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
             when (event) {
                 is DriveEvent.Message -> Toast.makeText(context, event.text, Toast.LENGTH_SHORT).show()
                 is DriveEvent.OpenFile -> {
-                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
-                    context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, event.mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    openCloudDocument(context, event.node)
                 }
                 is DriveEvent.ShareFile -> {
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
@@ -367,8 +384,7 @@ private fun OfflineScreen(modifier: Modifier, viewModel: OfflineViewModel = hilt
             when (event) {
                 is DriveEvent.Message -> Toast.makeText(context, event.text, Toast.LENGTH_SHORT).show()
                 is DriveEvent.OpenFile -> {
-                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
-                    context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, event.mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    openCloudDocument(context, event.node)
                 }
                 is DriveEvent.ShareFile -> {
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", event.file)
@@ -470,6 +486,20 @@ private fun SettingsScreen(modifier: Modifier, viewModel: SettingsViewModel = hi
 private fun <T> ChoiceSetting(title: String, current: String, choices: List<T>, label: (T) -> String, icon: androidx.compose.ui.graphics.vector.ImageVector, onChoose: (T) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box { ListItem(headlineContent = { Text(title) }, supportingContent = { Text(current) }, leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.fillMaxWidth(), trailingContent = { IconButton({ expanded = true }) { Icon(Icons.Default.ExpandMore, "Choose") } }); DropdownMenu(expanded, { expanded = false }) { choices.forEach { value -> DropdownMenuItem({ Text(label(value)) }, { expanded = false; onChoose(value) }) } } }
+}
+
+internal fun openCloudDocument(context: Context, node: RemoteNode) {
+    val uri = DocumentsContract.buildDocumentUri("${context.packageName}.documents", node.documentId)
+    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, node.mimeType).apply {
+        clipData = ClipData.newRawUri(node.name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        if (node.canWrite) addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "Install an app that can open this file type", Toast.LENGTH_LONG).show()
+    }
 }
 
 private fun fileSubtitle(node: RemoteNode): String = buildString {

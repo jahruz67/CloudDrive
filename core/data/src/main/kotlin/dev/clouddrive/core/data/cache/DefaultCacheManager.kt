@@ -6,13 +6,18 @@ import dev.clouddrive.core.data.db.*
 import dev.clouddrive.core.data.network.RemoteGateway
 import dev.clouddrive.core.model.CacheManager
 import dev.clouddrive.core.model.CacheState
+import dev.clouddrive.core.model.CloudError
 import dev.clouddrive.core.model.EtagUtils
 import dev.clouddrive.core.model.RemoteNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,18 +33,39 @@ class DefaultCacheManager @Inject constructor(
     private val offlineDir by lazy { File(context.filesDir, "offline-content").apply { mkdirs() } }
     private val workingDir by lazy { File(context.filesDir, "pending-edits").apply { mkdirs() } }
     private val thumbnailDir by lazy { File(context.cacheDir, "cloud-thumbnails").apply { mkdirs() } }
+    private val contentLocks = ConcurrentHashMap<String, Mutex>()
 
     override suspend fun acquire(node: RemoteNode): File = withContext(Dispatchers.IO) {
+        contentLocks.getOrPut(node.documentId, ::Mutex).withLock { acquireLocked(node) }
+    }
+
+    private suspend fun acquireLocked(node: RemoteNode): File {
+        // A saved edit is the latest local version, including while offline or waiting to upload.
+        cacheDao.find(node.documentId, "working")?.let { pending ->
+            File(pending.absolutePath).takeIf(File::isFile)?.let { return it }
+        }
         val pinned = pinDao.get(node.documentId) != null
         val existing = cacheDao.find(node.documentId, if (pinned) "offline" else "content")
         if (existing != null && EtagUtils.matches(existing.etag, node.etag) && File(existing.absolutePath).isFile) {
             cacheDao.upsert(existing.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
-            return@withContext File(existing.absolutePath)
+            return File(existing.absolutePath)
         }
         val target = File(if (pinned) offlineDir else contentDir, key(node))
         val partial = File(target.absolutePath + ".partial")
         val offset = partial.takeIf(File::exists)?.length() ?: 0L
-        val response = gateway.download(node.path, partial, offset, node.etag)
+        val response = try {
+            gateway.download(node.path, partial, offset, node.etag)
+        } catch (error: Exception) {
+            if (error is CloudError.Network || error is java.io.IOException) {
+                existing?.let { entry ->
+                    File(entry.absolutePath).takeIf(File::isFile)?.let { cached ->
+                        cacheDao.upsert(entry.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
+                        return cached
+                    }
+                }
+            }
+            throw error
+        }
         if (target.exists()) target.delete()
         check(partial.renameTo(target)) { "Unable to finalize cached file" }
         existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
@@ -52,18 +78,33 @@ class DefaultCacheManager @Inject constructor(
             ),
         )
         nodeDao.updateCacheState(node.documentId, if (pinned) CacheState.OFFLINE else CacheState.CACHED)
-        maintain()
-        target
+        return target
     }
 
     override suspend fun workingCopy(node: RemoteNode): File = withContext(Dispatchers.IO) {
         val source = acquire(node)
-        val target = File(workingDir, key(node) + ".working")
-        source.copyTo(target, overwrite = true)
-        cacheDao.upsert(
-            CacheEntryEntity("working:${node.documentId}", node.documentId, target.absolutePath, node.etag, target.length(), System.currentTimeMillis(), "working", false),
-        )
+        // Each writable descriptor owns its file; reopening must not truncate an earlier save.
+        val target = File(workingDir, UUID.randomUUID().toString() + ".working")
+        source.copyTo(target)
         target
+    }
+
+    override suspend fun storeUploaded(node: RemoteNode, source: File): Unit = withContext(Dispatchers.IO) {
+        contentLocks.getOrPut(node.documentId, ::Mutex).withLock {
+            val pinned = pinDao.get(node.documentId) != null
+            val kind = if (pinned) "offline" else "content"
+            val target = File(if (pinned) offlineDir else contentDir, key(node))
+            source.copyTo(target, overwrite = true)
+            val previous = cacheDao.find(node.documentId, kind)
+            cacheDao.upsert(CacheEntryEntity(
+                "$kind:${node.documentId}", node.documentId, target.absolutePath, node.etag,
+                target.length(), System.currentTimeMillis(), kind, !pinned,
+            ))
+            previous?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
+            // Never clear a more recent save that was queued during this upload.
+            cacheDao.deleteWorkingFile(node.documentId, source.absolutePath)
+            nodeDao.updateCacheState(node.documentId, if (pinned) CacheState.OFFLINE else CacheState.CACHED)
+        }
     }
 
     override suspend fun pin(node: RemoteNode) = withContext(Dispatchers.IO) {
@@ -198,7 +239,6 @@ class DefaultCacheManager @Inject constructor(
             etag = EtagUtils.normalize(node.etag), size = target.length(), lastAccessedEpochMillis = System.currentTimeMillis(),
             kind = kind, disposable = true,
         ))
-        maintain()
         target
     }
 
@@ -206,7 +246,7 @@ class DefaultCacheManager @Inject constructor(
         val cutoff = System.currentTimeMillis() - maxAgeDays.coerceAtLeast(1) * 24L * 60 * 60 * 1_000
         var freed = 0L
         cacheDao.expired(cutoff).forEach { freed += removeEntry(it) }
-        cacheDao.workingEntries().filter { it.lastAccessedEpochMillis < cutoff }.forEach { freed += removeEntry(it) }
+        // Pending edits are durable user data and must survive cache expiry and failed uploads.
         listOf(contentDir, thumbnailDir, workingDir).forEach { dir ->
             dir.listFiles()?.filter { it.name.endsWith(".partial") && it.lastModified() < cutoff }?.forEach {
                 freed += it.length(); it.delete()
