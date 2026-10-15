@@ -22,6 +22,8 @@ class DefaultCacheManagerTest {
     @get:Rule val temp = TemporaryFolder()
     private val entries = ConcurrentHashMap<String, CacheEntryEntity>()
     private val downloads = AtomicInteger()
+    private val previews = AtomicInteger()
+    private var previewFailure: Exception? = null
     private var pinned = false
     private var downloadFailure: Exception? = null
     private val node = RemoteNode(
@@ -64,6 +66,15 @@ class DefaultCacheManagerTest {
                     destination.parentFile?.mkdirs()
                     destination.writeText("remote")
                     DownloadResponse(node.etag, 6, 6)
+                }
+                "downloadPreview" -> {
+                    previews.incrementAndGet()
+                    Thread.sleep(30)
+                    val destination = args[3] as File
+                    destination.parentFile?.mkdirs()
+                    destination.writeText("preview")
+                    previewFailure?.let { throw it }
+                    destination
                 }
                 else -> error("Unexpected remote call: $method")
             }
@@ -142,6 +153,52 @@ class DefaultCacheManagerTest {
         assertEquals(original, manager.acquire(node.copy(etag = "\"v2\"")))
         assertEquals("remote", original.readText())
         assertEquals(node.etag, entries.getValue("offline:${node.documentId}").etag)
+    }
+
+    @Test fun `document thumbnails use previews and reuse the cached preview without downloading the file`() = runBlocking {
+        val manager = manager()
+        val document = node.copy(hasPreview = true)
+        val thumbnail = manager.thumbnail(document, 256, 256)
+        assertEquals("preview", thumbnail.readText())
+        assertEquals(thumbnail, manager.thumbnail(document, 256, 256))
+        assertEquals(1, previews.get())
+        assertEquals(0, downloads.get())
+    }
+
+    @Test fun `the app and document provider share simultaneous thumbnail requests`() = runBlocking {
+        val manager = manager()
+        val files = coroutineScope {
+            List(5) { async(Dispatchers.IO) { manager.thumbnail(node.copy(hasPreview = true), 256, 256) } }.awaitAll()
+        }
+        assertEquals(1, previews.get())
+        assertTrue(files.all { it.readText() == "preview" })
+    }
+
+    @Test fun `a changed document replaces its cached thumbnail`() = runBlocking {
+        val manager = manager()
+        val document = node.copy(hasPreview = true)
+        val old = manager.thumbnail(document, 256, 256)
+        val fresh = manager.thumbnail(document.copy(etag = "\"v2\""), 256, 256)
+        assertEquals(2, previews.get())
+        assertNotEquals(old, fresh)
+        assertFalse(old.exists())
+        assertTrue(fresh.isFile)
+    }
+
+    @Test fun `failed previews leave no partial thumbnail and can be retried`() = runBlocking {
+        val manager = manager()
+        val document = node.copy(hasPreview = true)
+        previewFailure = CloudError.Network("Offline")
+        try {
+            manager.thumbnail(document, 256, 256)
+            fail("Preview should fail while offline")
+        } catch (_: CloudError.Network) {
+            assertTrue(entries.isEmpty())
+            assertTrue(File(temp.root, "cache/cloud-thumbnails").listFiles().orEmpty().isEmpty())
+        }
+        previewFailure = null
+        assertEquals("preview", manager.thumbnail(document, 256, 256).readText())
+        assertEquals(0, downloads.get())
     }
 
     @Suppress("UNCHECKED_CAST")

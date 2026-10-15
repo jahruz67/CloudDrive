@@ -29,7 +29,9 @@ class NextcloudRemoteGateway @Inject constructor(
 
     override suspend fun startLogin(serverUrl: String): LoginStart = withContext(Dispatchers.IO) {
         val normalized = ServerUrlNormalizer.normalize(serverUrl)
-        val request = Request.Builder().url("$normalized/index.php/login/v2").post(EMPTY_BODY).build()
+        val request = Request.Builder().url("$normalized/index.php/login/v2")
+            .header("User-Agent", "CloudDrive (Android)")
+            .post(EMPTY_BODY).build()
         client.newCall(request).execute().use { response ->
             requireSuccess(response)
             val json = response.body?.string().orEmpty()

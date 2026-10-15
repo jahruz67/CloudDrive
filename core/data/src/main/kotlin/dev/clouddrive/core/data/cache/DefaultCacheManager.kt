@@ -34,6 +34,7 @@ class DefaultCacheManager @Inject constructor(
     private val workingDir by lazy { File(context.filesDir, "pending-edits").apply { mkdirs() } }
     private val thumbnailDir by lazy { File(context.cacheDir, "cloud-thumbnails").apply { mkdirs() } }
     private val contentLocks = ConcurrentHashMap<String, Mutex>()
+    private val thumbnailLocks = ConcurrentHashMap<String, Mutex>()
 
     override suspend fun acquire(node: RemoteNode): File = withContext(Dispatchers.IO) {
         contentLocks.getOrPut(node.documentId, ::Mutex).withLock { acquireLocked(node) }
@@ -224,22 +225,36 @@ class DefaultCacheManager @Inject constructor(
     override suspend fun disposableBytes() = cacheDao.disposableBytes()
 
     override suspend fun thumbnail(node: RemoteNode, width: Int, height: Int): File = withContext(Dispatchers.IO) {
-        if (!node.hasPreview) throw dev.clouddrive.core.model.CloudError.Unsupported("A preview is not available for this file")
-        val kind = "thumbnail:${width.coerceAtLeast(1)}x${height.coerceAtLeast(1)}"
+        val previewWidth = width.coerceIn(32, 2048)
+        val previewHeight = height.coerceIn(32, 2048)
+        val kind = "thumbnail:${previewWidth}x${previewHeight}"
+        thumbnailLocks.getOrPut("$kind:${node.documentId}", ::Mutex).withLock {
+            thumbnailLocked(node, previewWidth, previewHeight, kind)
+        }
+    }
+
+    private suspend fun thumbnailLocked(node: RemoteNode, width: Int, height: Int, kind: String): File {
+        if (node.isDirectory || !node.hasPreview) throw CloudError.Unsupported("A preview is not available for this file")
         val existing = cacheDao.find(node.documentId, kind)
         if (existing != null && EtagUtils.matches(existing.etag, node.etag) && File(existing.absolutePath).isFile) {
             cacheDao.upsert(existing.copy(lastAccessedEpochMillis = System.currentTimeMillis()))
-            return@withContext File(existing.absolutePath)
+            return File(existing.absolutePath)
         }
         val target = File(thumbnailDir, "${key(node)}-${width}x${height}")
-        gateway.downloadPreview(node.path, width, height, target)
+        val partial = File(target.absolutePath + ".partial")
+        try {
+            gateway.downloadPreview(node.path, width, height, partial)
+            java.nio.file.Files.move(partial.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            partial.delete()
+        }
         existing?.takeIf { it.absolutePath != target.absolutePath }?.let { File(it.absolutePath).delete() }
         cacheDao.upsert(CacheEntryEntity(
             id = "$kind:${node.documentId}", nodeDocumentId = node.documentId, absolutePath = target.absolutePath,
             etag = EtagUtils.normalize(node.etag), size = target.length(), lastAccessedEpochMillis = System.currentTimeMillis(),
             kind = kind, disposable = true,
         ))
-        target
+        return target
     }
 
     override suspend fun maintain(limitBytes: Long, maxAgeDays: Int): Long = withContext(Dispatchers.IO) {

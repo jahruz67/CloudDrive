@@ -10,6 +10,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
@@ -60,7 +62,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(viewModel) {
                     viewModel.events.collect { event ->
                         when (event) {
-                            is AppEvent.OpenBrowser -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(event.url)))
+                            is AppEvent.OpenBrowser -> openLoginBrowser(event.url)
                         }
                     }
                 }
@@ -71,17 +73,31 @@ class MainActivity : ComponentActivity() {
                     // A missing account only means signed out after the initial read completes.
                     when {
                         state.initializing -> Unit
-                        state.account == null -> LoginScreen(state.loggingIn, state.error, viewModel::login)
+                        state.account == null -> LoginScreen(state.loggingIn, state.loginPending, state.error, viewModel::login, viewModel::continueLogin, viewModel::cancelLogin)
                         else -> DriveShell(Modifier.fillMaxSize())
                     }
                 }
             }
         }
     }
+
+    private fun openLoginBrowser(url: String) {
+        // Keep every step in the default browser's cookie session. A generic
+        // ACTION_VIEW can hand Nextcloud links to another installed cloud app.
+        val browser = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER)
+            .resolveActivity(packageManager)?.packageName?.takeUnless { it == "android" }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+        if (browser != null) intent.setPackage(browser)
+        try {
+            startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+        }
+    }
 }
 
 @Composable
-private fun LoginScreen(loggingIn: Boolean, error: String?, onConnect: (String) -> Unit) {
+private fun LoginScreen(loggingIn: Boolean, loginPending: Boolean, error: String?, onConnect: (String) -> Unit, onContinue: () -> Unit, onCancel: () -> Unit) {
     var server by rememberSaveable { mutableStateOf("") }
     Box(
         Modifier
@@ -92,6 +108,7 @@ private fun LoginScreen(loggingIn: Boolean, error: String?, onConnect: (String) 
         Column(
             Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -129,6 +146,12 @@ private fun LoginScreen(loggingIn: Boolean, error: String?, onConnect: (String) 
                 }
             }
             if (loggingIn) Text("Finish signing in in your browser. This can take up to 20 minutes.", textAlign = TextAlign.Center, modifier = Modifier.padding(top = 16.dp))
+            if (loginPending) {
+                OutlinedButton(onClick = onContinue, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                    Text("Continue sign-in in browser")
+                }
+            }
+            if (loggingIn) TextButton(onClick = onCancel) { Text("Cancel sign-in") }
         }
     }
 }

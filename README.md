@@ -58,6 +58,8 @@ The connected test command requires a running emulator or attached device. Serve
 
 The login screen accepts the HTTPS base URL of a Nextcloud server and starts Nextcloud Login Flow v2 in the system browser. The returned app password is encrypted with an Android Keystore key and is never written to source or logs. The app currently supports one account (`primary`). HTTP and URLs containing embedded credentials are rejected.
 
+Sign-in opens in the default browser so installed Nextcloud link handlers do not interrupt its cookie session. **Continue sign-in in browser** reopens the same pending login link, and brief network failures during polling do not require a new flow. Sign-in can be canceled or expires after 20 minutes. Browser-side access-denied errors can also depend on the server's session and proxy configuration and require validation against that server.
+
 After login, CloudDrive refreshes the root immediately and starts a network-constrained incremental metadata crawl. Completed folders are recorded in Room, so an interrupted crawl resumes without repeating them. Settings includes **Refresh cloud index** for a full metadata refresh and **Pause indexing** to stop background crawling while retaining cached listings.
 
 ## Virtual-drive behavior
@@ -65,6 +67,8 @@ After login, CloudDrive refreshes the root immediately and starts a network-cons
 CloudDrive stores metadata—names, paths, sizes, dates, permissions, ETags, favorites, and preview availability—rather than mirroring cloud content. Folder metadata is considered fresh for five minutes. Android Files receives cached listings immediately; never-loaded and stale folders are fetched directly through the shared coordinator and the affected folder URI is notified when the transaction completes. Cached listings remain visible offline.
 
 Search, Recent, Favorites, and preview thumbnails use the metadata index or dedicated Nextcloud endpoints and do not depend on visiting a folder in CloudDrive. Nextcloud previews are cached separately; requesting a thumbnail never downloads the full cloud file.
+
+The app's list, grid, and Offline screens use the same preview cache as Android Files for all files that advertise a preview, including documents. File icons remain visible while previews load or when they are unavailable. Automatic folder navigation and background refreshes run quietly; the top refresh indicator appears only after a manual pull-to-refresh.
 
 File bytes are downloaded only when a file is opened or explicitly made available offline. Uploads happen only after an explicit create/edit/upload action. There is no camera backup, phone-folder synchronization, or physical `/storage/nextcloud` mirror.
 

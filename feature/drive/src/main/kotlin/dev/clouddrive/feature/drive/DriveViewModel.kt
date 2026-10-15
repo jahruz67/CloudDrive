@@ -29,6 +29,7 @@ data class DriveUiState(
     val sortDirection: SortDirection = SortDirection.ASCENDING,
     val selectedIds: Set<String> = emptySet(),
     val loading: Boolean = false,
+    val refreshing: Boolean = false,
     val error: String? = null,
     val settings: AppSettings = AppSettings(),
 )
@@ -52,11 +53,13 @@ class DriveViewModel @Inject constructor(
     private val sortField = MutableStateFlow(SortField.NAME)
     private val sortDirection = MutableStateFlow(SortDirection.ASCENDING)
     private val selected = MutableStateFlow<Set<String>>(emptySet())
-    private val loading = MutableStateFlow(false)
+    private val loading = MutableStateFlow(RefreshState())
     private val error = MutableStateFlow<String?>(null)
     private val searchResults = MutableStateFlow<List<RemoteNode>?>(null)
     private val eventsChannel = Channel<DriveEvent>(Channel.BUFFERED)
     private var refreshJob: Job? = null
+    private var refreshGeneration = 0L
+    private var refreshPath: String? = null
     val events = eventsChannel.receiveAsFlow()
 
     private val visibleNodes = combine(path, filter) { currentPath, currentFilter -> currentPath to currentFilter }
@@ -77,19 +80,19 @@ class DriveViewModel @Inject constructor(
             path = header.path, filter = header.filter, query = header.query,
             sortField = header.sort, sortDirection = header.direction,
             nodes = sort(body.nodes, header.sort, header.direction), selectedIds = body.selected,
-            loading = body.loading, error = body.error, settings = settings,
+            loading = body.loading.active, refreshing = body.loading.manual, error = body.error, settings = settings,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DriveUiState())
 
     fun navigate(node: RemoteNode) {
         if (node.isDirectory) {
-            path.value = node.path; filter.value = FileFilter.ALL; query.value = ""; selected.value = emptySet(); searchResults.value = null; refresh()
+            path.value = node.path; filter.value = FileFilter.ALL; query.value = ""; selected.value = emptySet(); searchResults.value = null; refreshQuietly()
         } else open(node)
     }
 
     fun navigateUp(): Boolean {
         if (path.value == "/") return false
-        path.value = RemotePath.parent(path.value); query.value = ""; selected.value = emptySet(); searchResults.value = null; refresh(); return true
+        path.value = RemotePath.parent(path.value); query.value = ""; selected.value = emptySet(); searchResults.value = null; refreshQuietly(); return true
     }
 
     fun setFilter(value: FileFilter) { filter.value = value; selected.value = emptySet(); searchResults.value = null }
@@ -120,17 +123,24 @@ class DriveViewModel @Inject constructor(
     fun refreshQuietly() = refreshFolder(silent = true)
 
     private fun refreshFolder(silent: Boolean) {
+        // A timed refresh must not interrupt an explicit pull on the same folder.
+        if (silent && loading.value.manual && refreshPath == path.value) return
+        val generation = ++refreshGeneration
         refreshJob?.cancel()
         val requestedPath = path.value
+        refreshPath = requestedPath
+        loading.value = RefreshState(active = true, manual = !silent)
+        error.value = null
         refreshJob = viewModelScope.launch {
-            if (!silent || state.value.nodes.isEmpty()) loading.value = true
             try {
-                when (val result = repository.refreshFolder(requestedPath)) {
+                val result = repository.refreshFolder(requestedPath)
+                if (generation != refreshGeneration) return@launch
+                when (result) {
                     is CloudResult.Failure -> if (silent) error.value = result.error.message else fail(result.error)
                     else -> error.value = null
                 }
             } finally {
-                loading.value = false
+                if (generation == refreshGeneration) loading.value = RefreshState()
             }
         }
     }
@@ -175,7 +185,7 @@ class DriveViewModel @Inject constructor(
 
     private fun <T> actionResult(block: suspend () -> CloudResult<T>, success: String) = action {
         when (val result = block()) {
-            is CloudResult.Success -> { eventsChannel.send(DriveEvent.Message(success)); refresh() }
+            is CloudResult.Success -> { eventsChannel.send(DriveEvent.Message(success)); refreshQuietly() }
             is CloudResult.Failure -> fail(result.error)
         }
     }
@@ -204,7 +214,13 @@ class DriveViewModel @Inject constructor(
     }
 
     private data class Header(val path: String, val filter: FileFilter, val query: String, val sort: SortField, val direction: SortDirection)
-    private data class Body(val nodes: List<RemoteNode>, val selected: Set<String>, val loading: Boolean, val error: String?)
+    private data class RefreshState(val active: Boolean = false, val manual: Boolean = false)
+    private data class Body(val nodes: List<RemoteNode>, val selected: Set<String>, val loading: RefreshState, val error: String?)
+}
+
+@HiltViewModel
+class FileThumbnailViewModel @Inject constructor(private val cacheManager: CacheManager) : ViewModel() {
+    suspend fun thumbnail(node: RemoteNode): File = cacheManager.thumbnail(node, 256, 256)
 }
 
 @HiltViewModel

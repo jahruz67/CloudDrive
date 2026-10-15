@@ -43,6 +43,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
 import dev.clouddrive.core.model.*
 import java.text.DateFormat
 import kotlin.math.ln
@@ -50,6 +51,8 @@ import kotlin.math.pow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import java.io.File
 
 enum class MainDestination(val label: String) { FILES("Files"), OFFLINE("Offline"), TRANSFERS("Transfers"), SETTINGS("Settings") }
 
@@ -190,8 +193,8 @@ private fun FilesScreen(modifier: Modifier, viewModel: DriveViewModel = hiltView
             }
         }
         if (state.path != "/") Text(state.path, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-        PullToRefreshBox(isRefreshing = state.loading, onRefresh = viewModel::refresh, modifier = Modifier.weight(1f)) {
-            if (state.nodes.isEmpty() && !state.loading) EmptyFiles(state.error)
+        PullToRefreshBox(isRefreshing = state.refreshing, onRefresh = viewModel::refresh, modifier = Modifier.weight(1f)) {
+            if (state.nodes.isEmpty()) EmptyFiles(state.error, state.loading)
             else if (state.settings.fileViewMode == FileViewMode.LIST) {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
                     items(state.nodes, key = RemoteNode::documentId) { node ->
@@ -281,24 +284,51 @@ private fun FileCard(node: RemoteNode, selected: Boolean, onClick: () -> Unit, o
 }
 
 @Composable
-private fun FileVisual(node: RemoteNode, modifier: Modifier) {
+private fun FileVisual(node: RemoteNode, modifier: Modifier, viewModel: FileThumbnailViewModel = hiltViewModel()) {
     val context = LocalContext.current
-    if (!node.isDirectory && node.mimeType.startsWith("image/") && node.hasPreview) {
-        val uri = DocumentsContract.buildDocumentUri("${context.packageName}.documents", node.documentId)
-        AsyncImage(model = uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier.clip(RoundedCornerShape(8.dp)))
-    } else {
-        Box(modifier, contentAlignment = Alignment.Center) {
+    var thumbnail by remember(node.documentId, node.etag, node.hasPreview) { mutableStateOf<File?>(null) }
+    LaunchedEffect(node.documentId, node.etag, node.hasPreview) {
+        if (!node.isDirectory && node.hasPreview) {
+            thumbnail = try {
+                viewModel.thumbnail(node)
+            } catch (canceled: CancellationException) {
+                throw canceled
+            } catch (_: Exception) {
+                null // Keep the file icon when offline or the server cannot render a preview.
+            }
+        }
+    }
+    var previewLoaded by remember(node.documentId, node.etag, thumbnail) { mutableStateOf(false) }
+    val request = remember(thumbnail, node.documentId, node.etag) {
+        thumbnail?.let {
+            ImageRequest.Builder(context).data(it)
+                .memoryCacheKey("preview:${node.documentId}:${node.etag}:256x256")
+                .build()
+        }
+    }
+    Box(modifier.clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+        if (!previewLoaded) {
             Icon(
                 fileIcon(node),
                 contentDescription = null,
                 tint = if (node.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxSize(.65f),
             )
-            when (node.cacheState) {
-                CacheState.OFFLINE -> Icon(Icons.Default.CheckCircle, "Offline", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
-                CacheState.CACHED -> Icon(Icons.Default.Schedule, "Cached", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
-                CacheState.CLOUD_ONLY -> Unit
-            }
+        }
+        if (request != null) {
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                onSuccess = { previewLoaded = true },
+                onError = { previewLoaded = false },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        when (node.cacheState) {
+            CacheState.OFFLINE -> Icon(Icons.Default.CheckCircle, "Offline", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
+            CacheState.CACHED -> Icon(Icons.Default.Schedule, "Cached", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
+            CacheState.CLOUD_ONLY -> Unit
         }
     }
 }
@@ -350,7 +380,7 @@ private fun NodeMenu(node: RemoteNode, onAction: (NodeAction) -> Unit, isOffline
     }
 }
 
-@Composable private fun EmptyFiles(error: String?) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.CloudQueue, null, Modifier.size(64.dp)); Text(error ?: "This folder is empty", Modifier.padding(16.dp)) } } }
+@Composable private fun EmptyFiles(error: String?, loading: Boolean = false) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.CloudQueue, null, Modifier.size(64.dp)); Text(error ?: if (loading) "Loading folder…" else "This folder is empty", Modifier.padding(16.dp)) } } }
 
 @Composable
 private fun SortMenu(current: SortField, onSort: (SortField) -> Unit) {

@@ -8,6 +8,7 @@ import dev.clouddrive.core.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import java.time.Instant
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,7 +24,18 @@ class LoginCoordinator @Inject constructor(
 
     suspend fun await(start: LoginStart): Account = withTimeout(20 * 60 * 1_000L) {
         while (true) {
-            when (val result = gateway.pollLogin(start.pollEndpoint, start.pollToken)) {
+            // Switching from the app to the browser can briefly interrupt connectivity.
+            // Keep the same one-time token alive instead of forcing a new sign-in.
+            val result = try {
+                gateway.pollLogin(start.pollEndpoint, start.pollToken)
+            } catch (_: IOException) {
+                delay(2_000)
+                continue
+            } catch (_: CloudError.Network) {
+                delay(2_000)
+                continue
+            }
+            when (result) {
                 LoginPollResult.Pending -> delay(1_000)
                 is LoginPollResult.Complete -> {
                     credentials.save(result.credential)
