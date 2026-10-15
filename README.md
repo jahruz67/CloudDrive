@@ -21,20 +21,36 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Release signing
 
-GitHub releases use a stable release key when all of these Actions repository
-secrets are configured:
+GitHub releases automatically use the permanent signing key checked into
+`.github/signing/cloudapp-release.jks`. No Actions secrets or manual signing setup
+are needed. The key alias, store password, and key password are all `cloudapp`.
+This key is intentionally public for convenience: anyone with the repository can
+sign an APK with the same identity.
 
-- `ANDROID_SIGNING_KEYSTORE`: the release keystore encoded as a single-line Base64 value
-- `ANDROID_SIGNING_ALIAS`: the key alias in that keystore
-- `ANDROID_SIGNING_STORE_PASSWORD`: the keystore password
-- `ANDROID_SIGNING_KEY_PASSWORD`: the key password
+Keep this exact keystore for all future releases so Android can install updates.
+Never regenerate or replace it. If it is accidentally deleted, restore it from Git
+history. The workflow fails if it is missing and never generates temporary signing
+keys or publishes debug-signed releases.
 
-Keep the keystore and passwords backed up. Every release must use the same key so
-Android can install future versions as updates.
+Tags such as `v0.2.0` and `v0.2.0-beta01` become the APK's `versionName`. Each new
+workflow run uses its run number plus one for `versionCode`, so it is greater than
+the old fixed code of `1` and increases for future releases. Rerunning the same
+release keeps its code. Keep this workflow's run-number history when changing the
+release process; resetting it requires choosing a code above all published builds.
+Local builds retain their development versions unless explicitly overridden:
 
-If these secrets are absent or incomplete, the workflow publishes an installable
-debug-signed APK instead. That fallback is suitable for testing and fresh installs,
-but it does not provide a stable signing identity for upgrades between releases.
+```powershell
+./gradlew.bat :app:assembleRelease '-PreleaseVersionCode=123' '-PreleaseVersionName=0.2.0'
+```
+
+Download a newer release APK on the device and open it to update in place, keeping
+the account, settings, and offline files. Android requires the same application ID
+and signing key, and a version code at least as high as the installed build.
+If the currently installed app was signed by an earlier runner's temporary debug
+key and that private key was not saved, it cannot be upgraded with the permanent
+key. A one-time uninstall/reinstall is then unavoidable and removes local app data;
+subsequent releases signed with the permanent key can update normally. Do not
+uninstall while uploads are pending.
 
 ## Test
 

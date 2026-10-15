@@ -6,6 +6,15 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+val releaseVersionCode = providers.gradleProperty("releaseVersionCode").map { value ->
+    val code = value.toIntOrNull()
+    require(code != null && code in 1..2_100_000_000) {
+        "releaseVersionCode must be an integer between 1 and 2100000000"
+    }
+    code
+}.orElse(1)
+val releaseVersionName = providers.gradleProperty("releaseVersionName").orElse("0.1.0-beta01")
+
 android {
     namespace = "dev.clouddrive.nextcloud"
     compileSdk = 36
@@ -14,8 +23,8 @@ android {
         applicationId = "dev.clouddrive.nextcloud"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-beta01"
+        versionCode = releaseVersionCode.get()
+        versionName = releaseVersionName.get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
